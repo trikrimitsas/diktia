@@ -68,25 +68,26 @@ class AuctionServer:
         finally:
             sock.close()
 
-    # ------------------------------------------------------------------ #
-    #  Account management: register / login / logout                       #
-    # ------------------------------------------------------------------ #
-
+    # account management functions
+    # !!!! other fail cases???
+    # !!!! idea: include error code  in response so peer can adjust retry strategy in case of failure
+    # added error code field in message
     def _on_register(self, sock, msg):
         uname, pwd = msg["username"], msg["password"]
         with self.lock:
             if uname in self.users:
-                resp = {"type": "REGISTER_RESP", "success": False,
+                resp = {"type": "REGISTER_RESP", "success": False, 
                         "message": "Username already taken. Choose another."}
             else:
                 self.users[uname] = {"password": pwd,
                                       "num_auctions_seller": 0,
                                       "num_auctions_bidder": 0}
-                resp = {"type": "REGISTER_RESP", "success": True,
+                resp = {"type": "REGISTER_RESP", "success": True, 
                         "message": "Registered successfully."}
                 logging.info("REGISTER  %s", uname)
         send_message(sock, resp)
 
+    # !!!! login needs to also send error code in case of failure so peer can retry or register if not registered
     def _on_login(self, sock, msg):
         uname, pwd = msg["username"], msg["password"]
         with self.lock:

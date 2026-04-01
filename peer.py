@@ -5,6 +5,7 @@ import time
 import random
 import os
 import sys
+import re
 
 import config
 from protocol import send_message, recv_message
@@ -12,22 +13,25 @@ from protocol import send_message, recv_message
 
 class Peer:
     def __init__(self, peer_id, username, password):
+        # identifying info:
         self.peer_id = peer_id
         self.username = username
         self.password = password
+        # session info:
         self.token_id = None
         self.running = True
+        # local storage:
         self.shared_dir = os.path.join("shared_directories", "peer_%s" % peer_id)
         self.item_counter = 0
+        # networking info:
         self.peer_port = None
 
         os.makedirs(self.shared_dir, exist_ok=True)
 
-    # ------------------------------------------------------------------ #
-    #  Server communication helper                                         #
-    # ------------------------------------------------------------------ #
-
+    # helper method for server communication
+    # starts the connections, sends message to server, waits for a response and returns response to caller
     def _send_to_server(self, msg):
+        # AF_INET == socket module constant for IPv4 address family signifies internet protocol used
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(config.SOCKET_TIMEOUT)
         s.connect((config.SERVER_HOST, config.SERVER_PORT))
@@ -36,19 +40,44 @@ class Peer:
         s.close()
         return resp
 
-    # ------------------------------------------------------------------ #
-    #  Account management                                                  #
-    # ------------------------------------------------------------------ #
+    # account management functions
 
+    # helper for retry registration
+    def new_creds(self):
+        # generate new username by choosing a random number to append the base from the next 4 greater numbers than current
+        # extract prefix and numeric part 
+        match_username = re.match(r"(.*_)(\d+)$", self.username)
+        match_password = re.match(r"(.*_)(\d+)$", self.password)
+        if not match_username or not match_password:
+            logging.error("Username or password format not recognized for generating new credentials.")
+            return False
+        user_prefix = match_username.group(1) #take first part of username
+        pass_prefix = match_password.group(1) #take first part of password
+        num = int(match_username.group(2)) #take numeric part of username it's the same for both username and password since they are generated in the same format
+        
+        new_postfix = num + random.randint(1, 4)
+        self.username = f"{user_prefix}{new_postfix}"
+        self.password = f"{pass_prefix}{new_postfix}"
+        return True
+    
+    # !!!! register needs retry logic in case username exists
+    # !!!! currently if registration fails peer stops execution\
+    # changed to automatically generate new credentials and retry registration until success
     def register(self):
         resp = self._send_to_server({
             "type": "REGISTER",
             "username": self.username,
             "password": self.password,
         })
-        logging.info("Register: %s", resp["message"])
-        return resp["success"]
+        logging.info("Register attempt(%s): %s",self.username, resp["message"])
+        if resp["success"]:
+            return True
+        else:
+            logging.warning("Registration failed for %s. Consider retrying with a different username.", self.username)
+            self.new_creds()
+            return self.register()
 
+    # !!!! also doesnt have retry logic peer just stops execution
     def login(self):
         resp = self._send_to_server({
             "type": "LOGIN",
