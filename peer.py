@@ -45,6 +45,7 @@ class Peer:
     # helper for retry registration
     def new_creds(self):
         # generate new username by choosing a random number to append the base from the next 4 greater numbers than current
+        # name and password use the template base_x, x is an int > 0
         # extract prefix and numeric part 
         match_username = re.match(r"(.*_)(\d+)$", self.username)
         match_password = re.match(r"(.*_)(\d+)$", self.password)
@@ -60,9 +61,7 @@ class Peer:
         self.password = f"{pass_prefix}{new_postfix}"
         return True
     
-    # !!!! register needs retry logic in case username exists
-    # !!!! currently if registration fails peer stops execution\
-    # changed to automatically generate new credentials and retry registration until success
+    # automatically generate new credentials and retry registration until success
     def register(self):
         resp = self._send_to_server({
             "type": "REGISTER",
@@ -73,10 +72,23 @@ class Peer:
         if resp["success"]:
             return True
         else:
+            # recursive call to retry registration with new credentials until success
             logging.warning("Registration failed for %s. Consider retrying with a different username.", self.username)
             self.new_creds()
             return self.register()
 
+    # helper for correcting password
+    def correct_password(self):
+        match_username = re.match(r"(.*_)(\d+)$", self.username)
+        match_password = re.match(r"(.*_)(\d+)$", self.password)
+        if not match_username or not match_password:
+            logging.error("Username or password format not recognized for generating new credentials.")
+            return False
+        pass_prefix = match_password.group(1) #take first part of password
+        num = int(match_username.group(2)) # since username was found in database we can assume it's the same as the numeric part of password
+        self.password = f"{pass_prefix}{num}"
+        return True
+    
     # !!!! also doesnt have retry logic peer just stops execution
     def login(self):
         resp = self._send_to_server({
@@ -88,9 +100,26 @@ class Peer:
             self.token_id = resp["token_id"]
             logging.info("Login OK  token=%s", self.token_id)
             self._send_items_to_server()
-        else:
-            logging.warning("Login FAIL: %s", resp["message"])
-        return resp["success"]
+            return True
+        code = resp.get("error_code")
+        logging.warning("Login FAIL (%s): %s", code, resp.get("message"))
+        
+        # case 1 user not in database -> register and then login
+        if code == 1:
+            logging.info("Attempting to register and then login for %s", self.username)
+            if self.register():
+                return self.login()
+            else:
+                return False
+        # case 2 wrong password -> try to correct the password and retrylogin
+        elif code == 2:
+            logging.info("Attempting to correct password and retry login for %s", self.username)
+            if self.correct_password():
+                return self.login()
+            else:
+                return False
+        # case 3 already logged in -> 
+        # !!!! request session token or modify server to automatically send it in this case so peer can continue instead of stopping execution
 
     def logout(self):
         if not self.token_id:

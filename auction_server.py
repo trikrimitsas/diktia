@@ -69,9 +69,7 @@ class AuctionServer:
             sock.close()
 
     # account management functions
-    # !!!! other fail cases???
-    # !!!! idea: include error code  in response so peer can adjust retry strategy in case of failure
-    # added error code field in message
+    
     def _on_register(self, sock, msg):
         uname, pwd = msg["username"], msg["password"]
         with self.lock:
@@ -87,24 +85,28 @@ class AuctionServer:
                 logging.info("REGISTER  %s", uname)
         send_message(sock, resp)
 
-    # !!!! login needs to also send error code in case of failure so peer can retry or register if not registered
+    # !!!! login needs to send error code in case of failure so peer can retry or register if not registered
+    # code 0 -> success, 1 -> user not found, 2 -> wrong password, 3 -> already logged in
     def _on_login(self, sock, msg):
         uname, pwd = msg["username"], msg["password"]
         with self.lock:
             if uname not in self.users:
                 send_message(sock, {"type": "LOGIN_RESP", "success": False,
                                      "token_id": None,
+                                     "error_code":1,
                                      "message": "User not found."})
                 return
             if self.users[uname]["password"] != pwd:
                 send_message(sock, {"type": "LOGIN_RESP", "success": False,
                                      "token_id": None,
+                                    "error_code":2,
                                      "message": "Wrong password."})
                 return
             for s in self.sessions.values():
                 if s["username"] == uname:
                     send_message(sock, {"type": "LOGIN_RESP", "success": False,
                                          "token_id": None,
+                                            "error_code":3,
                                          "message": "Already logged in."})
                     return
             token = str(random.randint(100000, 999999))
@@ -115,6 +117,7 @@ class AuctionServer:
             logging.info("LOGIN     %s  token=%s", uname, token)
         send_message(sock, {"type": "LOGIN_RESP", "success": True,
                              "token_id": token,
+                             "error_code": 0,
                              "message": "Login successful."})
 
     def _on_logout(self, sock, msg):
