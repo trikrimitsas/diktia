@@ -102,12 +102,12 @@ class AuctionServer:
                                     "error_code":2,
                                      "message": "Wrong password."})
                 return
-            for s in self.sessions.values():
+            for existing_token, s in self.sessions.items():
                 if s["username"] == uname:
-                    send_message(sock, {"type": "LOGIN_RESP", "success": False,
-                                         "token_id": None,
-                                            "error_code":3,
-                                         "message": "Already logged in."})
+                    send_message(sock, {"type": "LOGIN_RESP", "success": True,
+                                         "token_id": existing_token,
+                                         "error_code": 0,
+                                         "message": "Already logged in, returning existing token."})
                     return
             token = str(random.randint(100000, 999999))
             while token in self.sessions:

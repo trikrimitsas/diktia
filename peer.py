@@ -61,21 +61,24 @@ class Peer:
         self.password = f"{pass_prefix}{new_postfix}"
         return True
     
-    # automatically generate new credentials and retry registration until success
-    def register(self):
+    MAX_REGISTER_RETRIES = 10
+
+    def register(self, _attempt=1):
         resp = self._send_to_server({
             "type": "REGISTER",
             "username": self.username,
             "password": self.password,
         })
-        logging.info("Register attempt(%s): %s",self.username, resp["message"])
+        logging.info("Register attempt #%d (%s): %s", _attempt, self.username, resp["message"])
         if resp["success"]:
             return True
-        else:
-            # recursive call to retry registration with new credentials until success
-            logging.warning("Registration failed for %s. Consider retrying with a different username.", self.username)
-            self.new_creds()
-            return self.register()
+        if _attempt >= self.MAX_REGISTER_RETRIES:
+            logging.error("Registration failed after %d attempts.", _attempt)
+            return False
+        logging.warning("Registration failed for %s, generating new credentials and retrying.", self.username)
+        if not self.new_creds():
+            return False
+        return self.register(_attempt=_attempt + 1)
 
     # helper for correcting password
     def correct_password(self):
@@ -89,7 +92,6 @@ class Peer:
         self.password = f"{pass_prefix}{num}"
         return True
     
-    # !!!! also doesnt have retry logic peer just stops execution
     def login(self):
         resp = self._send_to_server({
             "type": "LOGIN",
@@ -102,24 +104,24 @@ class Peer:
             self._send_items_to_server()
             return True
         code = resp.get("error_code")
-        logging.warning("Login FAIL (%s): %s", code, resp.get("message"))
-        
-        # case 1 user not in database -> register and then login
+        logging.warning("Login FAIL (code=%s): %s", code, resp.get("message"))
+
         if code == 1:
-            logging.info("Attempting to register and then login for %s", self.username)
+            logging.info("User not found, registering %s and retrying login.", self.username)
             if self.register():
                 return self.login()
-            else:
-                return False
-        # case 2 wrong password -> try to correct the password and retrylogin
+            return False
         elif code == 2:
-            logging.info("Attempting to correct password and retry login for %s", self.username)
+            logging.info("Wrong password for %s, attempting correction.", self.username)
             if self.correct_password():
                 return self.login()
-            else:
-                return False
-        # case 3 already logged in -> 
-        # !!!! request session token or modify server to automatically send it in this case so peer can continue instead of stopping execution
+            return False
+        elif code == 3:
+            logging.info("Already logged in as %s, session still active.", self.username)
+            return False
+        else:
+            logging.error("Unexpected login error code %s for %s", code, self.username)
+            return False
 
     def logout(self):
         if not self.token_id:
