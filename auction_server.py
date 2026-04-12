@@ -15,6 +15,7 @@ class AuctionServer:
         self.sessions = {}
         self.auction_queue = deque()
         self.current_auction = None
+        self.purchased_items = {}
         self.lock = threading.Lock()
         self.queue_event = threading.Event()
         self.running = True
@@ -106,14 +107,19 @@ class AuctionServer:
                 if s["username"] == uname:
                     send_message(sock, {"type": "LOGIN_RESP", "success": True,
                                          "token_id": existing_token,
-                                         "error_code": 0,
+                                         "error_code": 3,
                                          "message": "Already logged in, returning existing token."})
                     return
             token = str(random.randint(100000, 999999))
             while token in self.sessions:
                 token = str(random.randint(100000, 999999))
-            self.sessions[token] = {"username": uname,
-                                     "ip_address": None, "port": None}
+            self.sessions[token] = {
+                "username": uname,
+                "ip_address": None,
+                "port": None,
+                "num_auctions_seller": self.users[uname]["num_auctions_seller"],
+                "num_auctions_bidder": self.users[uname]["num_auctions_bidder"],
+            }
             logging.info("LOGIN     %s  token=%s", uname, token)
         send_message(sock, {"type": "LOGIN_RESP", "success": True,
                              "token_id": token,
@@ -267,6 +273,10 @@ class AuctionServer:
         oid = msg["object_id"]
         with self.lock:
             uname = self.sessions.get(token, {}).get("username", "?")
+            self.purchased_items[oid] = {
+                "owner_token_id": token,
+                "owner_username": uname,
+            }
         logging.info("PURCHASE  %s  bought %s", uname, oid)
         send_message(sock, {"type": "NOTIFY_PURCHASE_RESP", "success": True})
 
@@ -369,26 +379,40 @@ class AuctionServer:
             hbid = ca["highest_bid"]
             wtk = ca["highest_bidder_token_id"]
 
-            if wtk is None:
-                logging.info("ENDED     %s  (no bids)", oid)
-                self.current_auction = None
-                return
-
             seller_sess = self.sessions.get(stk, {})
-            winner_sess = self.sessions.get(wtk, {})
-            seller_name = seller_sess.get("username", "?")
-            winner_name = winner_sess.get("username", "?")
-
-            if seller_name != "?" and seller_name in self.users:
-                self.users[seller_name]["num_auctions_seller"] += 1
-            if winner_name != "?" and winner_name in self.users:
-                self.users[winner_name]["num_auctions_bidder"] += 1
-
             s_ip = seller_sess.get("ip_address")
             s_port = seller_sess.get("port")
-            w_ip = winner_sess.get("ip_address")
-            w_port = winner_sess.get("port")
-            self.current_auction = None
+
+            if wtk is None:
+                self.current_auction = None
+            else:
+                winner_sess = self.sessions.get(wtk, {})
+                seller_name = seller_sess.get("username", "?")
+                winner_name = winner_sess.get("username", "?")
+
+                if seller_name != "?" and seller_name in self.users:
+                    self.users[seller_name]["num_auctions_seller"] += 1
+                    if stk in self.sessions:
+                        self.sessions[stk]["num_auctions_seller"] = \
+                            self.users[seller_name]["num_auctions_seller"]
+                if winner_name != "?" and winner_name in self.users:
+                    self.users[winner_name]["num_auctions_bidder"] += 1
+                    if wtk in self.sessions:
+                        self.sessions[wtk]["num_auctions_bidder"] = \
+                            self.users[winner_name]["num_auctions_bidder"]
+
+                w_ip = winner_sess.get("ip_address")
+                w_port = winner_sess.get("port")
+                self.current_auction = None
+
+        if wtk is None:
+            logging.info("ENDED     %s  (no bids)", oid)
+            if s_ip and s_port:
+                self._notify_peer(s_ip, s_port, {
+                    "type": "AUCTION_NO_BIDS",
+                    "object_id": oid,
+                })
+            return
 
         logging.info("ENDED     %s  won by %s  for %.2f  (seller: %s)",
                       oid, winner_name, hbid, seller_name)
