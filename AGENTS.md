@@ -1,6 +1,5 @@
 # AGENTS.md
 
-## Cursor Cloud specific instructions
 
 ### Overview
 Distributed auction system ("diktia") — pure Python 3 (standard library only, zero external dependencies).
