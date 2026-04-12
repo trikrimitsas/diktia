@@ -5,6 +5,7 @@ import time
 import random
 import os
 import sys
+import re
 
 import config
 from protocol import send_message, recv_message
@@ -12,22 +13,25 @@ from protocol import send_message, recv_message
 
 class Peer:
     def __init__(self, peer_id, username, password):
+        # identifying info:
         self.peer_id = peer_id
         self.username = username
         self.password = password
+        # session info:
         self.token_id = None
         self.running = True
+        # local storage:
         self.shared_dir = os.path.join("shared_directories", "peer_%s" % peer_id)
         self.item_counter = 0
+        # networking info:
         self.peer_port = None
 
         os.makedirs(self.shared_dir, exist_ok=True)
 
-    # ------------------------------------------------------------------ #
-    #  Server communication helper                                         #
-    # ------------------------------------------------------------------ #
-
+    # helper method for server communication
+    # starts the connections, sends message to server, waits for a response and returns response to caller
     def _send_to_server(self, msg):
+        # AF_INET == socket module constant for IPv4 address family signifies internet protocol used
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(config.SOCKET_TIMEOUT)
         s.connect((config.SERVER_HOST, config.SERVER_PORT))
@@ -36,19 +40,58 @@ class Peer:
         s.close()
         return resp
 
-    # ------------------------------------------------------------------ #
-    #  Account management                                                  #
-    # ------------------------------------------------------------------ #
+    # account management functions
 
-    def register(self):
+    # helper for retry registration
+    def new_creds(self):
+        # generate new username by choosing a random number to append the base from the next 4 greater numbers than current
+        # name and password use the template base_x, x is an int > 0
+        # extract prefix and numeric part 
+        match_username = re.match(r"(.*_)(\d+)$", self.username)
+        match_password = re.match(r"(.*_)(\d+)$", self.password)
+        if not match_username or not match_password:
+            logging.error("Username or password format not recognized for generating new credentials.")
+            return False
+        user_prefix = match_username.group(1) #take first part of username
+        pass_prefix = match_password.group(1) #take first part of password
+        num = int(match_username.group(2)) #take numeric part of username it's the same for both username and password since they are generated in the same format
+        
+        new_postfix = num + random.randint(1, 4)
+        self.username = f"{user_prefix}{new_postfix}"
+        self.password = f"{pass_prefix}{new_postfix}"
+        return True
+    
+    MAX_REGISTER_RETRIES = 10
+
+    def register(self, _attempt=1):
         resp = self._send_to_server({
             "type": "REGISTER",
             "username": self.username,
             "password": self.password,
         })
-        logging.info("Register: %s", resp["message"])
-        return resp["success"]
+        logging.info("Register attempt #%d (%s): %s", _attempt, self.username, resp["message"])
+        if resp["success"]:
+            return True
+        if _attempt >= self.MAX_REGISTER_RETRIES:
+            logging.error("Registration failed after %d attempts.", _attempt)
+            return False
+        logging.warning("Registration failed for %s, generating new credentials and retrying.", self.username)
+        if not self.new_creds():
+            return False
+        return self.register(_attempt=_attempt + 1)
 
+    # helper for correcting password
+    def correct_password(self):
+        match_username = re.match(r"(.*_)(\d+)$", self.username)
+        match_password = re.match(r"(.*_)(\d+)$", self.password)
+        if not match_username or not match_password:
+            logging.error("Username or password format not recognized for generating new credentials.")
+            return False
+        pass_prefix = match_password.group(1) #take first part of password
+        num = int(match_username.group(2)) # since username was found in database we can assume it's the same as the numeric part of password
+        self.password = f"{pass_prefix}{num}"
+        return True
+    
     def login(self):
         resp = self._send_to_server({
             "type": "LOGIN",
@@ -59,9 +102,26 @@ class Peer:
             self.token_id = resp["token_id"]
             logging.info("Login OK  token=%s", self.token_id)
             self._send_items_to_server()
+            return True
+        code = resp.get("error_code")
+        logging.warning("Login FAIL (code=%s): %s", code, resp.get("message"))
+
+        if code == 1:
+            logging.info("User not found, registering %s and retrying login.", self.username)
+            if self.register():
+                return self.login()
+            return False
+        elif code == 2:
+            logging.info("Wrong password for %s, attempting correction.", self.username)
+            if self.correct_password():
+                return self.login()
+            return False
+        elif code == 3:
+            logging.info("Already logged in as %s, session still active.", self.username)
+            return False
         else:
-            logging.warning("Login FAIL: %s", resp["message"])
-        return resp["success"]
+            logging.error("Unexpected login error code %s for %s", code, self.username)
+            return False
 
     def logout(self):
         if not self.token_id:

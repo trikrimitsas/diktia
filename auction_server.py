@@ -68,43 +68,46 @@ class AuctionServer:
         finally:
             sock.close()
 
-    # ------------------------------------------------------------------ #
-    #  Account management: register / login / logout                       #
-    # ------------------------------------------------------------------ #
-
+    # account management functions
+    
     def _on_register(self, sock, msg):
         uname, pwd = msg["username"], msg["password"]
         with self.lock:
             if uname in self.users:
-                resp = {"type": "REGISTER_RESP", "success": False,
+                resp = {"type": "REGISTER_RESP", "success": False, 
                         "message": "Username already taken. Choose another."}
             else:
                 self.users[uname] = {"password": pwd,
                                       "num_auctions_seller": 0,
                                       "num_auctions_bidder": 0}
-                resp = {"type": "REGISTER_RESP", "success": True,
+                resp = {"type": "REGISTER_RESP", "success": True, 
                         "message": "Registered successfully."}
                 logging.info("REGISTER  %s", uname)
         send_message(sock, resp)
 
+    # !!!! login needs to send error code in case of failure so peer can retry or register if not registered
+    # code 0 -> success, 1 -> user not found, 2 -> wrong password, 3 -> already logged in
     def _on_login(self, sock, msg):
         uname, pwd = msg["username"], msg["password"]
         with self.lock:
             if uname not in self.users:
                 send_message(sock, {"type": "LOGIN_RESP", "success": False,
                                      "token_id": None,
+                                     "error_code":1,
                                      "message": "User not found."})
                 return
             if self.users[uname]["password"] != pwd:
                 send_message(sock, {"type": "LOGIN_RESP", "success": False,
                                      "token_id": None,
+                                    "error_code":2,
                                      "message": "Wrong password."})
                 return
-            for s in self.sessions.values():
+            for existing_token, s in self.sessions.items():
                 if s["username"] == uname:
-                    send_message(sock, {"type": "LOGIN_RESP", "success": False,
-                                         "token_id": None,
-                                         "message": "Already logged in."})
+                    send_message(sock, {"type": "LOGIN_RESP", "success": True,
+                                         "token_id": existing_token,
+                                         "error_code": 0,
+                                         "message": "Already logged in, returning existing token."})
                     return
             token = str(random.randint(100000, 999999))
             while token in self.sessions:
@@ -114,6 +117,7 @@ class AuctionServer:
             logging.info("LOGIN     %s  token=%s", uname, token)
         send_message(sock, {"type": "LOGIN_RESP", "success": True,
                              "token_id": token,
+                             "error_code": 0,
                              "message": "Login successful."})
 
     def _on_logout(self, sock, msg):
