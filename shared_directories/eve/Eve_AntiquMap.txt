@@ -1,0 +1,1 @@
+﻿[object_id: Eve_AntiquMap; description: "Antique World Map (1820)"; start_bid: "75.00"; auction_duration: "35"]

@@ -1,0 +1,1 @@
+[object_id: Object_5_11; description: "Item 11 from user_5"; start_bid: "59.89"; auction_duration: "60"]

@@ -1,5 +1,18 @@
-SERVER_HOST = "127.0.0.1"
-SERVER_PORT = 9000
+import os
+
+
+def _get_int_env(name: str, default: int) -> int:
+	raw = os.getenv(name)
+	if raw is None or raw == "":
+		return default
+	try:
+		return int(raw)
+	except ValueError:
+		return default
+
+
+SERVER_HOST = os.getenv("DIKTIA_SERVER_HOST", "127.0.0.1")
+SERVER_PORT = _get_int_env("DIKTIA_SERVER_PORT", 9000)
 
 # Spec values: POLL=60, ITEM_GEN=120. Reduced for faster demo.
 AUCTION_POLL_INTERVAL = 60

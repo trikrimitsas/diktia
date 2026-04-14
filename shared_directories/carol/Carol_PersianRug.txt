@@ -1,0 +1,1 @@
+﻿[object_id: Carol_PersianRug; description: "18th Century Antique Persian Rug"; start_bid: "200.00"; auction_duration: "30"]

@@ -1,0 +1,1 @@
+﻿[object_id: Bob_NikonFTn; description: "1970s Nikon Photomic FTn Camera"; start_bid: "80.00"; auction_duration: "30"]

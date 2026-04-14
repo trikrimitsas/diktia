@@ -1,0 +1,1 @@
+﻿[object_id: Dave_GoldCoin; description: "Roman Aureus Gold Coin (100 AD)"; start_bid: "250.00"; auction_duration: "40"]

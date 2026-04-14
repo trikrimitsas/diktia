@@ -1,0 +1,1 @@
+﻿[object_id: Alice_VinylRecords; description: "Beatles White Album Vinyl (1968)"; start_bid: "40.00"; auction_duration: "20"]

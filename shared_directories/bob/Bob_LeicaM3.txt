@@ -1,0 +1,1 @@
+﻿[object_id: Bob_LeicaM3; description: "Leica M3 Rangefinder Camera (1954)"; start_bid: "120.00"; auction_duration: "35"]

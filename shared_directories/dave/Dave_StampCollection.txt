@@ -1,0 +1,1 @@
+﻿[object_id: Dave_StampCollection; description: "Victorian Penny Black Stamp Collection"; start_bid: "100.00"; auction_duration: "25"]

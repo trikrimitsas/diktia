@@ -2,18 +2,33 @@ import subprocess
 import sys
 import time
 import os
+import socket
 
 NUM_PEERS = 5
+
+
+def _pick_free_port(host: str = "127.0.0.1") -> int:
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind((host, 0))
+        return s.getsockname()[1]
+    finally:
+        s.close()
 
 
 def main():
     base = os.path.dirname(os.path.abspath(__file__))
     procs = []
 
-    print("Starting Auction Server...")
+    port = _pick_free_port()
+    env = os.environ.copy()
+    env["DIKTIA_SERVER_PORT"] = str(port)
+
+    print(f"Starting Auction Server on port {port}...")
     srv = subprocess.Popen(
         [sys.executable, os.path.join(base, "auction_server.py")],
         cwd=base,
+        env=env,
     )
     procs.append(srv)
     time.sleep(2)
@@ -24,6 +39,7 @@ def main():
             [sys.executable, os.path.join(base, "peer.py"),
              str(i), "user_%d" % i, "pass_%d" % i],
             cwd=base,
+            env=env,
         )
         procs.append(p)
         time.sleep(0.5)

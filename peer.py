@@ -11,15 +11,16 @@ from protocol import send_message, recv_message
 
 
 class Peer:
-    def __init__(self, peer_id, username, password):
+    def __init__(self, peer_id, username, password, auto_generate_items=True):
         self.peer_id = peer_id
         self.username = username
         self.password = password
         self.token_id = None
         self.running = True
-        self.shared_dir = os.path.join("shared_directories", "peer_%s" % peer_id)
+        self.shared_dir = os.path.join("shared_directories", username)
         self.item_counter = 0
         self.peer_port = None
+        self.auto_generate_items = auto_generate_items
 
         os.makedirs(self.shared_dir, exist_ok=True)
 
@@ -82,8 +83,6 @@ class Peer:
 
     def _send_items_to_server(self):
         items = self._scan_shared_dir()
-        if not items:
-            return
         try:
             resp = self._send_to_server({
                 "type": "REQUEST_AUCTION",
@@ -92,7 +91,10 @@ class Peer:
                 "ip_address": config.SERVER_HOST,
                 "port": self.peer_port,
             })
-            logging.info("requestAuction: %s", resp["message"])
+            if items:
+                logging.info("requestAuction: %s", resp["message"])
+            else:
+                logging.info("requestAuction: 0 item(s) queued (contact info updated)")
         except Exception as e:
             logging.warning("requestAuction error: %s", e)
 
@@ -102,6 +104,8 @@ class Peer:
             return items
         for fname in os.listdir(self.shared_dir):
             if not fname.endswith(".txt"):
+                continue
+            if not self.auto_generate_items and fname.startswith("Object_"):
                 continue
             meta = self._parse_item(os.path.join(self.shared_dir, fname))
             if meta:
@@ -379,8 +383,11 @@ class Peer:
         if not self.login():
             return
 
-        threading.Thread(target=self._item_generator_loop,
-                         daemon=True).start()
+        if self.auto_generate_items:
+            threading.Thread(target=self._item_generator_loop,
+                             daemon=True).start()
+        else:
+            logging.info("Auto item generation disabled for this peer.")
         threading.Thread(target=self._auction_poller_loop,
                          daemon=True).start()
 
@@ -395,13 +402,16 @@ class Peer:
 
 
 if __name__ == "__main__":
-    pid = int(sys.argv[1]) if len(sys.argv) > 1 else 1
-    uname = sys.argv[2] if len(sys.argv) > 2 else "user_%s" % pid
-    pwd = sys.argv[3] if len(sys.argv) > 3 else "pass_%s" % pid
+    args = [arg for arg in sys.argv[1:] if arg != "--no-auto-items"]
+    no_auto_items = "--no-auto-items" in sys.argv[1:]
+
+    pid = int(args[0]) if len(args) > 0 else 1
+    uname = args[1] if len(args) > 1 else "user_%s" % pid
+    pwd = args[2] if len(args) > 2 else "pass_%s" % pid
 
     logging.basicConfig(
         level=logging.INFO,
         format="[PEER-%s %%(asctime)s] %%(message)s" % pid,
         datefmt="%H:%M:%S",
     )
-    Peer(pid, uname, pwd).start()
+    Peer(pid, uname, pwd, auto_generate_items=not no_auto_items).start()

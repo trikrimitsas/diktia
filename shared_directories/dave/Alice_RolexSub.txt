@@ -1,0 +1,1 @@
+[object_id: Alice_RolexSub; description: "Vintage 1965 Rolex Submariner"; start_bid: "50.00"; auction_duration: "25"]

@@ -1,0 +1,1 @@
+﻿[object_id: Carol_OilPainting; description: "19th Century Oil Painting - Seascape"; start_bid: "150.00"; auction_duration: "35"]

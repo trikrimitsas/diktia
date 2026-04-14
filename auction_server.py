@@ -242,6 +242,8 @@ class AuctionServer:
             ca["highest_bid"] = bid
             ca["highest_bidder_token_id"] = token
             ca["bidders"].add(token)
+            ca["end_time"] = time.time() + ca["duration"]
+            dur_reset = ca["duration"]
             uname = self.sessions[token]["username"]
             peers_snap = {
                 t: {"ip_address": s["ip_address"], "port": s["port"]}
@@ -249,6 +251,7 @@ class AuctionServer:
                 if s["ip_address"] and s["port"]
             }
         logging.info("BID       %.2f  by %s  on %s", bid, uname, oid)
+        logging.info("TIMER     reset to %ds  (item: %s)", dur_reset, oid)
         send_message(sock, {"type": "BID_RESP", "success": True,
                              "message": "Bid accepted."})
         self._notify_all(peers_snap, {
@@ -437,6 +440,7 @@ class AuctionServer:
                     "highest_bid": sbid,
                     "highest_bidder_token_id": None,
                     "end_time": end_time,
+                    "duration": dur,
                     "bidders": set(),
                 }
 
