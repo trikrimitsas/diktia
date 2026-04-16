@@ -28,6 +28,17 @@ class Peer:
 
         os.makedirs(self.shared_dir, exist_ok=True)
 
+    @staticmethod
+    def _get_local_ip():
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception:
+            return "127.0.0.1"
+
     # helper method for server communication
     # starts the connections, sends message to server, waits for a response and returns response to caller
     def _send_to_server(self, msg):
@@ -98,12 +109,16 @@ class Peer:
             "username": self.username,
             "password": self.password,
         })
+        code = resp.get("error_code")
         if resp["success"]:
             self.token_id = resp["token_id"]
-            logging.info("Login OK  token=%s", self.token_id)
+            if code == 3:
+                logging.info("Login OK (already logged in)  token=%s",
+                             self.token_id)
+            else:
+                logging.info("Login OK  token=%s", self.token_id)
             self._send_items_to_server()
             return True
-        code = resp.get("error_code")
         logging.warning("Login FAIL (code=%s): %s", code, resp.get("message"))
 
         if code == 1:
@@ -115,9 +130,6 @@ class Peer:
             logging.info("Wrong password for %s, attempting correction.", self.username)
             if self.correct_password():
                 return self.login()
-            return False
-        elif code == 3:
-            logging.info("Already logged in as %s, session still active.", self.username)
             return False
         else:
             logging.error("Unexpected login error code %s for %s", code, self.username)
@@ -149,7 +161,7 @@ class Peer:
                 "type": "REQUEST_AUCTION",
                 "token_id": self.token_id,
                 "items": items,
-                "ip_address": config.SERVER_HOST,
+                "ip_address": self._get_local_ip(),
                 "port": self.peer_port,
             })
             logging.info("requestAuction: %s", resp["message"])
@@ -224,7 +236,7 @@ class Peer:
                         "type": "REQUEST_AUCTION",
                         "token_id": self.token_id,
                         "items": [item],
-                        "ip_address": config.SERVER_HOST,
+                        "ip_address": self._get_local_ip(),
                         "port": self.peer_port,
                     })
                     logging.info("Queued %s: %s",
@@ -299,7 +311,7 @@ class Peer:
     def _peer_server_loop(self):
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        srv.bind((config.SERVER_HOST, 0))
+        srv.bind(("0.0.0.0", 0))
         self.peer_port = srv.getsockname()[1]
         srv.listen(10)
         srv.settimeout(1.0)
@@ -346,6 +358,11 @@ class Peer:
                 logging.info("*** SOLD %s for %.2f to %s ***",
                              msg["object_id"], msg["final_bid"],
                              msg["buyer_username"])
+                send_message(sock, {"type": "ACK"})
+
+            elif t == "AUCTION_NO_BIDS":
+                logging.info("[notify] Auction ended with no bids: %s",
+                             msg["object_id"])
                 send_message(sock, {"type": "ACK"})
 
             elif t == "AUCTION_CANCELLED":
