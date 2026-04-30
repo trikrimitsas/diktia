@@ -58,6 +58,7 @@ class AuctionServer:
                 "PLACE_BID": self._on_place_bid,
                 "NOTIFY_PURCHASE": self._on_transaction_report,
                 "TRANSACTION_REPORT": self._on_transaction_report,
+                "SELLER_TX_SUCCESS": self._on_seller_tx_success,
             }
             handler = dispatch.get(msg.get("type"))
             if handler:
@@ -360,6 +361,32 @@ class AuctionServer:
             daemon=True,
         ).start()
 
+    def _on_seller_tx_success(self, sock, msg):
+        """Seller confirms successful P2P metadata transfer (Phase 2 PDF)."""
+        token = msg["token_id"]
+        oid = msg["object_id"]
+        with self.lock:
+            if token not in self.sessions:
+                send_message(sock, {"type": "SELLER_TX_SUCCESS_RESP",
+                                     "success": False,
+                                     "message": "Invalid token."})
+                return
+            ca = self.active_auctions.get(oid)
+            if ca is None or ca.get("phase") != "awarding":
+                send_message(sock, {"type": "SELLER_TX_SUCCESS_RESP",
+                                     "success": False,
+                                     "message": "No awarding auction for this object_id."})
+                return
+            if ca["seller_token_id"] != token:
+                send_message(sock, {"type": "SELLER_TX_SUCCESS_RESP",
+                                     "success": False,
+                                     "message": "Not the seller for this auction."})
+                return
+            uname = self.sessions[token]["username"]
+        logging.info("SELLER_TX_SUCCESS %s  object=%s", uname, oid)
+        send_message(sock, {"type": "SELLER_TX_SUCCESS_RESP", "success": True,
+                             "message": "Recorded."})
+
     # ------------------------------------------------------------------ #
     #  Peer notification                                                 #
     # ------------------------------------------------------------------ #
@@ -448,6 +475,8 @@ class AuctionServer:
             logging.info("SKIP      %s  (seller offline)", oid)
             return
         seller_name = self.sessions[token]["username"]
+        if seller_name in self.users:
+            self.users[seller_name]["num_auctions_seller"] += 1
         end_time = time.time() + dur
         self.active_auctions[oid] = {
             "object_id": oid,
@@ -582,8 +611,6 @@ class AuctionServer:
                     "ok" if success else "fail",
                 )
             if success:
-                if seller_name != "?" and seller_name in self.users:
-                    self.users[seller_name]["num_auctions_seller"] += 1
                 if winner_name != "?" and winner_name in self.users:
                     self.users[winner_name]["num_auctions_bidder"] += 1
                 self.active_auctions.pop(oid, None)

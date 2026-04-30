@@ -194,6 +194,15 @@ class ManualClient:
             self._print_json(">>> INCOMING RESPONSE", resp)
             os.remove(path)
             print(f"[INFO] Sold {oid} (TCP) and removed {path}", flush=True)
+            if self.token_id:
+                r = self._send_to_server(
+                    {
+                        "type": "SELLER_TX_SUCCESS",
+                        "token_id": self.token_id,
+                        "object_id": oid,
+                    }
+                )
+                self._print_json("<<< SERVER (seller success)", r)
             return
 
         buyer_ip = sock.getpeername()[0]
@@ -223,6 +232,15 @@ class ManualClient:
         if ok:
             os.remove(path)
             print(f"[INFO] Sold {oid} via UDP GBN; removed {path}", flush=True)
+            if self.token_id:
+                r = self._send_to_server(
+                    {
+                        "type": "SELLER_TX_SUCCESS",
+                        "token_id": self.token_id,
+                        "object_id": oid,
+                    }
+                )
+                self._print_json("<<< SERVER (seller success)", r)
         else:
             print("[WARN] UDP transfer did not complete; file kept.", flush=True)
 

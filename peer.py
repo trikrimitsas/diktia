@@ -337,6 +337,18 @@ class Peer:
     #  P2P transaction                                                     #
     # ------------------------------------------------------------------ #
 
+    def _report_seller_tx(self, oid):
+        if not self.token_id:
+            return
+        try:
+            self._send_to_server({
+                "type": "SELLER_TX_SUCCESS",
+                "token_id": self.token_id,
+                "object_id": oid,
+            })
+        except Exception as e:
+            logging.warning("seller tx success report: %s", e)
+
     def _report_tx(self, oid, outcome):
         try:
             self._send_to_server({
@@ -431,6 +443,7 @@ class Peer:
             })
             os.remove(fpath)
             logging.info("Sold %s to %s (TCP metadata)", oid, buyer)
+            self._report_seller_tx(oid)
             return
 
         buyer_ip = sock.getpeername()[0]
@@ -460,6 +473,7 @@ class Peer:
             os.remove(fpath)
             logging.info("Sold %s to %s for %.2f (UDP GBN) file removed",
                          oid, buyer, bid)
+            self._report_seller_tx(oid)
         else:
             logging.warning("UDP transfer incomplete for %s — file kept", oid)
 

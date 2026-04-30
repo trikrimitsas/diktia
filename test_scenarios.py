@@ -174,6 +174,13 @@ def _do_sell(seller, sock, msg):
                              "object_id": oid, "metadata": meta})
         os.remove(fp)
         pr("[%s] TRANSACTION.OK   | item='%s'  metadata sent (TCP)" % (seller, oid))
+        if seller in tokens:
+            try:
+                send_req({"type": "SELLER_TX_SUCCESS",
+                          "token_id": tokens[seller], "object_id": oid})
+                pr("[%s] SELLER_TX_SUCCESS for '%s'" % (seller, oid))
+            except Exception:
+                pass
         return
     buyer_ip = sock.getpeername()[0]
     buyer_udp = int(buyer_udp)
@@ -193,6 +200,13 @@ def _do_sell(seller, sock, msg):
     if ok:
         os.remove(fp)
         pr("[%s] TRANSACTION.OK   | item='%s'  UDP GBN complete, file removed" % (seller, oid))
+        if seller in tokens:
+            try:
+                send_req({"type": "SELLER_TX_SUCCESS",
+                          "token_id": tokens[seller], "object_id": oid})
+                pr("[%s] SELLER_TX_SUCCESS for '%s'" % (seller, oid))
+            except Exception:
+                pass
     else:
         pr("[%s] TRANSACTION.FAIL | UDP incomplete, file kept" % seller)
 
