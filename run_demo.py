@@ -23,6 +23,8 @@ def main():
     port = _pick_free_port()
     env = os.environ.copy()
     env["DIKTIA_SERVER_PORT"] = str(port)
+    env.setdefault("DIKTIA_UDP_DROP_DATA_PROB", "0.2")
+    env.setdefault("DIKTIA_UDP_ACK_SEND_PROB", "0.8")
 
     print(f"Starting Auction Server on port {port}...")
     srv = subprocess.Popen(

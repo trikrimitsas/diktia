@@ -21,6 +21,18 @@ ITEM_GEN_MAX_INTERVAL = 120
 
 BID_INTEREST_PROBABILITY = 0.60
 BID_INCREMENT_FACTOR = 0.10
+# Final fraction of auction duration where automated peers may bid up to this increment.
+LATE_AUCTION_FRACTION = 0.10
+LATE_BID_INCREMENT_FACTOR = 0.20
+
+MAX_ACTIVE_AUCTIONS = 2
+
+# UDP loss simulation (Phase 2 demo/test); deterministic when rng seed set in tests.
+UDP_DROP_DATA_PROB = float(os.getenv("DIKTIA_UDP_DROP_DATA_PROB", "0.0"))
+UDP_ACK_SEND_PROB = float(os.getenv("DIKTIA_UDP_ACK_SEND_PROB", "1.0"))
+
+# Winning bidder proceeds with transaction (peer automated behavior).
+TRANSACTION_PROCEED_PROBABILITY = 0.70
 
 SOCKET_TIMEOUT = 5
 RECV_BUFFER = 4096

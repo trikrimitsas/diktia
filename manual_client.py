@@ -5,9 +5,11 @@ import shlex
 import socket
 import sys
 import threading
+import time
 from typing import Optional
 
 import config
+import gbn_udp
 from protocol import recv_message, send_message
 
 
@@ -18,8 +20,12 @@ class ManualClient:
         self.token_id: Optional[str] = None
         self.running = True
         self.peer_port: Optional[int] = None
+        self.udp_port: Optional[int] = None
+        self.udp_sock: Optional[socket.socket] = None
+        self.udp_lock = threading.Lock()
         self.shared_dir = os.path.join("shared_directories", username)
         self.last_won = None
+        self.last_auctions: list = []
         os.makedirs(self.shared_dir, exist_ok=True)
 
     def _print_json(self, prefix: str, payload: dict) -> None:
@@ -40,6 +46,11 @@ class ManualClient:
         return resp
 
     def _listener_loop(self) -> None:
+        self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.udp_sock.bind((config.SERVER_HOST, 0))
+        self.udp_port = self.udp_sock.getsockname()[1]
+
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         srv.bind((config.SERVER_HOST, 0))
@@ -47,7 +58,11 @@ class ManualClient:
         srv.listen(10)
         srv.settimeout(1.0)
 
-        print(f"[LISTENER] {self.username} listening on {config.SERVER_HOST}:{self.peer_port}", flush=True)
+        print(
+            f"[LISTENER] {self.username} TCP {config.SERVER_HOST}:{self.peer_port} "
+            f"UDP {self.udp_port}",
+            flush=True,
+        )
 
         while self.running:
             try:
@@ -60,6 +75,11 @@ class ManualClient:
             except socket.timeout:
                 pass
         srv.close()
+        if self.udp_sock:
+            try:
+                self.udp_sock.close()
+            except OSError:
+                pass
 
     def _handle_incoming(self, sock: socket.socket) -> None:
         try:
@@ -93,6 +113,7 @@ class ManualClient:
                     "final_bid": msg["final_bid"],
                     "seller_ip": msg["seller_ip"],
                     "seller_port": msg["seller_port"],
+                    "seller_udp_port": int(msg.get("seller_udp_port", msg["seller_port"])),
                 }
                 send_message(sock, {"type": "ACK"})
                 self._print_json(">>> INCOMING RESPONSE", {"type": "ACK"})
@@ -146,6 +167,7 @@ class ManualClient:
     def _handle_sell(self, sock: socket.socket, msg: dict) -> None:
         oid = msg["object_id"]
         path = os.path.join(self.shared_dir, f"{oid}.txt")
+        buyer_udp = msg.get("buyer_udp_port")
 
         if not os.path.exists(path):
             resp = {
@@ -161,16 +183,48 @@ class ManualClient:
         with open(path, "r", encoding="utf-8") as fh:
             metadata = fh.read()
 
+        if buyer_udp is None:
+            resp = {
+                "type": "TRANSACTION_RESP",
+                "success": True,
+                "object_id": oid,
+                "metadata": metadata,
+            }
+            send_message(sock, resp)
+            self._print_json(">>> INCOMING RESPONSE", resp)
+            os.remove(path)
+            print(f"[INFO] Sold {oid} (TCP) and removed {path}", flush=True)
+            return
+
+        buyer_ip = sock.getpeername()[0]
+        buyer_udp = int(buyer_udp)
+        packets = gbn_udp.packetize_metadata(metadata.encode("utf-8"))
         resp = {
             "type": "TRANSACTION_RESP",
             "success": True,
             "object_id": oid,
-            "metadata": metadata,
+            "metadata": "",
+            "udp": True,
         }
         send_message(sock, resp)
         self._print_json(">>> INCOMING RESPONSE", resp)
-        os.remove(path)
-        print(f"[INFO] Sold {oid} and removed local file {path}", flush=True)
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+        usock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        ok = gbn_udp.GbnUdpSender(
+            usock,
+            (buyer_ip, buyer_udp),
+            packets,
+            log=lambda m: print(f"[GBN] {m}", flush=True),
+        ).run()
+        if ok:
+            os.remove(path)
+            print(f"[INFO] Sold {oid} via UDP GBN; removed {path}", flush=True)
+        else:
+            print("[WARN] UDP transfer did not complete; file kept.", flush=True)
 
     def cmd_register(self) -> None:
         self._send_to_server(
@@ -241,6 +295,7 @@ class ManualClient:
                 "items": items,
                 "ip_address": config.SERVER_HOST,
                 "port": self.peer_port,
+                "udp_port": self.udp_port,
             }
         )
         if not items:
@@ -252,13 +307,32 @@ class ManualClient:
         if not self.token_id:
             print("[ERROR] Login first.", flush=True)
             return
-        self._send_to_server({"type": "GET_CURRENT_AUCTION", "token_id": self.token_id})
+        r = self._send_to_server({"type": "GET_CURRENT_AUCTION", "token_id": self.token_id})
+        if r.get("active") and r.get("auctions"):
+            self.last_auctions = r["auctions"]
+        elif r.get("active"):
+            self.last_auctions = [{"object_id": r["object_id"], "description": r.get("description", "")}]
+        else:
+            self.last_auctions = []
 
-    def cmd_details(self) -> None:
+    def cmd_details(self, args) -> None:
         if not self.token_id:
             print("[ERROR] Login first.", flush=True)
             return
-        self._send_to_server({"type": "GET_AUCTION_DETAILS", "token_id": self.token_id})
+        oid = args[0] if args else None
+        if oid is None:
+            if len(self.last_auctions) == 1:
+                oid = self.last_auctions[0]["object_id"]
+            else:
+                print("[ERROR] details <object_id> (or run 'current' when exactly one auction).", flush=True)
+                return
+        self._send_to_server(
+            {
+                "type": "GET_AUCTION_DETAILS",
+                "token_id": self.token_id,
+                "object_id": oid,
+            }
+        )
 
     def cmd_bid(self, args) -> None:
         if len(args) != 2:
@@ -286,13 +360,24 @@ class ManualClient:
             bid = info["final_bid"]
             seller_ip = info["seller_ip"]
             seller_port = info["seller_port"]
+            seller_udp = int(info.get("seller_udp_port", seller_port))
+        elif len(args) == 5:
+            object_id = args[0]
+            bid = float(args[1])
+            seller_ip = args[2]
+            seller_port = int(args[3])
+            seller_udp = int(args[4])
         elif len(args) == 4:
             object_id = args[0]
             bid = float(args[1])
             seller_ip = args[2]
             seller_port = int(args[3])
+            seller_udp = seller_port
         else:
-            print("Usage: buy last | buy <object_id> <bid> <seller_ip> <seller_port>", flush=True)
+            print(
+                "Usage: buy last | buy <object_id> <bid> <seller_ip> <seller_tcp_port> [seller_udp_port]",
+                flush=True,
+            )
             return
 
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -304,6 +389,7 @@ class ManualClient:
                 "object_id": object_id,
                 "bid": bid,
                 "buyer_username": self.username,
+                "buyer_udp_port": self.udp_port,
             }
             self._print_json(">>> PEER REQUEST", req)
             send_message(s, req)
@@ -314,19 +400,57 @@ class ManualClient:
 
         if not resp.get("success"):
             print("[ERROR] Transaction failed.", flush=True)
+            if self.token_id:
+                self._send_to_server(
+                    {
+                        "type": "TRANSACTION_REPORT",
+                        "token_id": self.token_id,
+                        "object_id": object_id,
+                        "outcome": "fail",
+                    }
+                )
             return
+
+        if resp.get("udp"):
+            if not self.udp_sock:
+                print("[ERROR] UDP socket not ready.", flush=True)
+                return
+            with self.udp_lock:
+                meta_bytes = gbn_udp.receive_metadata(
+                    self.udp_sock,
+                    drop_data_prob=float(config.UDP_DROP_DATA_PROB),
+                    ack_send_prob=float(config.UDP_ACK_SEND_PROB),
+                    log=lambda m: print(f"[GBN] {m}", flush=True),
+                    deadline=time.time() + 120.0,
+                )
+            if meta_bytes is None:
+                print("[ERROR] UDP receive incomplete.", flush=True)
+                if self.token_id:
+                    self._send_to_server(
+                        {
+                            "type": "TRANSACTION_REPORT",
+                            "token_id": self.token_id,
+                            "object_id": object_id,
+                            "outcome": "fail",
+                        }
+                    )
+                return
+            text = meta_bytes.decode("utf-8")
+        else:
+            text = resp.get("metadata", "")
 
         path = os.path.join(self.shared_dir, f"{object_id}.txt")
         with open(path, "w", encoding="utf-8") as fh:
-            fh.write(resp["metadata"])
+            fh.write(text)
         print(f"[INFO] Saved purchased item to {path}", flush=True)
 
         if self.token_id:
             self._send_to_server(
                 {
-                    "type": "NOTIFY_PURCHASE",
+                    "type": "TRANSACTION_REPORT",
                     "token_id": self.token_id,
                     "object_id": object_id,
+                    "outcome": "success",
                 }
             )
 
@@ -338,6 +462,7 @@ class ManualClient:
                     "logged_in": bool(self.token_id),
                     "token_id": self.token_id,
                     "peer_port": self.peer_port,
+                    "udp_port": self.udp_port,
                     "shared_dir": self.shared_dir,
                     "server_host": config.SERVER_HOST,
                     "server_port": config.SERVER_PORT,
@@ -360,10 +485,10 @@ class ManualClient:
             "  list-items\n"
             "  request-all\n"
             "  current\n"
-            "  details\n"
+            "  details [object_id]\n"
             "  bid <object_id> <amount>\n"
             "  buy last\n"
-            "  buy <object_id> <bid> <seller_ip> <seller_port>\n"
+            "  buy <object_id> <bid> <seller_ip> <seller_tcp_port> [seller_udp_port]\n"
             "  exit\n",
             flush=True,
         )
@@ -408,7 +533,7 @@ class ManualClient:
                 elif cmd == "current":
                     self.cmd_current()
                 elif cmd == "details":
-                    self.cmd_details()
+                    self.cmd_details(args)
                 elif cmd == "bid":
                     self.cmd_bid(args)
                 elif cmd == "buy":
