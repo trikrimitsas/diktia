@@ -59,6 +59,7 @@ class AuctionServer:
                 "NOTIFY_PURCHASE": self._on_transaction_report,
                 "TRANSACTION_REPORT": self._on_transaction_report,
                 "SELLER_TX_SUCCESS": self._on_seller_tx_success,
+                "SELLER_TX_FAILURE": self._on_seller_tx_failure,
             }
             handler = dispatch.get(msg.get("type"))
             if handler:
@@ -387,6 +388,38 @@ class AuctionServer:
         send_message(sock, {"type": "SELLER_TX_SUCCESS_RESP", "success": True,
                              "message": "Recorded."})
 
+    def _on_seller_tx_failure(self, sock, msg):
+        """Seller reports inability to complete P2P metadata transfer."""
+        token = msg["token_id"]
+        oid = msg["object_id"]
+        reason = msg.get("reason", "")
+        with self.lock:
+            if token not in self.sessions:
+                send_message(sock, {"type": "SELLER_TX_FAILURE_RESP",
+                                     "success": False,
+                                     "message": "Invalid token."})
+                return
+            ca = self.active_auctions.get(oid)
+            if ca is None or ca.get("phase") != "awarding":
+                send_message(sock, {"type": "SELLER_TX_FAILURE_RESP",
+                                     "success": False,
+                                     "message": "No awarding auction for this object_id."})
+                return
+            if ca["seller_token_id"] != token:
+                send_message(sock, {"type": "SELLER_TX_FAILURE_RESP",
+                                     "success": False,
+                                     "message": "Not the seller for this auction."})
+                return
+            uname = self.sessions[token]["username"]
+        logging.info("SELLER_TX_FAILURE %s  object=%s  reason=%s", uname, oid, reason)
+        send_message(sock, {"type": "SELLER_TX_FAILURE_RESP", "success": True,
+                             "message": "Recorded."})
+        threading.Thread(
+            target=self._handle_seller_tx_failure_outcome,
+            args=(oid,),
+            daemon=True,
+        ).start()
+
     # ------------------------------------------------------------------ #
     #  Peer notification                                                 #
     # ------------------------------------------------------------------ #
@@ -630,6 +663,25 @@ class AuctionServer:
                 "TX_FAIL   %s  buyer=%s — trying fallback",
                 oid,
                 winner_name,
+            )
+            self._try_award_next_buyer(oid)
+
+    def _handle_seller_tx_failure_outcome(self, oid):
+        """Seller-side transfer failed: try next bidder without buyer reputation penalty."""
+        try_again = False
+        with self.lock:
+            ca = self.active_auctions.get(oid)
+            if ca is None or ca.get("phase") != "awarding":
+                return
+            wtk = ca.get("current_buyer_token")
+            if wtk is None:
+                return
+            ca["current_buyer_token"] = None
+            try_again = True
+        if try_again:
+            logging.info(
+                "SELLER_TX_FAIL server: %s — seller could not complete transfer, trying fallback",
+                oid,
             )
             self._try_award_next_buyer(oid)
 

@@ -165,6 +165,14 @@ def _do_sell(seller, sock, msg):
     if not os.path.exists(fp):
         send_message(sock, {"type": "TRANSACTION_RESP", "success": False,
                              "object_id": oid, "metadata": ""})
+        if seller in tokens:
+            try:
+                send_req({"type": "SELLER_TX_FAILURE",
+                          "token_id": tokens[seller], "object_id": oid,
+                          "reason": "item_not_found"})
+                pr("[%s] SELLER_TX_FAILURE for '%s'" % (seller, oid))
+            except Exception:
+                pass
         return
     with open(fp, encoding="utf-8") as f:
         meta = f.read()
@@ -209,6 +217,14 @@ def _do_sell(seller, sock, msg):
                 pass
     else:
         pr("[%s] TRANSACTION.FAIL | UDP incomplete, file kept" % seller)
+        if seller in tokens:
+            try:
+                send_req({"type": "SELLER_TX_FAILURE",
+                          "token_id": tokens[seller], "object_id": oid,
+                          "reason": "udp_incomplete"})
+                pr("[%s] SELLER_TX_FAILURE for '%s'" % (seller, oid))
+            except Exception:
+                pass
 
 
 def main():

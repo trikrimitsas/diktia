@@ -178,6 +178,16 @@ class ManualClient:
             }
             send_message(sock, resp)
             self._print_json(">>> INCOMING RESPONSE", resp)
+            if self.token_id:
+                r = self._send_to_server(
+                    {
+                        "type": "SELLER_TX_FAILURE",
+                        "token_id": self.token_id,
+                        "object_id": oid,
+                        "reason": "item_not_found",
+                    }
+                )
+                self._print_json("<<< SERVER (seller failure)", r)
             return
 
         with open(path, "r", encoding="utf-8") as fh:
@@ -243,6 +253,16 @@ class ManualClient:
                 self._print_json("<<< SERVER (seller success)", r)
         else:
             print("[WARN] UDP transfer did not complete; file kept.", flush=True)
+            if self.token_id:
+                r = self._send_to_server(
+                    {
+                        "type": "SELLER_TX_FAILURE",
+                        "token_id": self.token_id,
+                        "object_id": oid,
+                        "reason": "udp_incomplete",
+                    }
+                )
+                self._print_json("<<< SERVER (seller failure)", r)
 
     def cmd_register(self) -> None:
         self._send_to_server(
@@ -417,16 +437,7 @@ class ManualClient:
             s.close()
 
         if not resp.get("success"):
-            print("[ERROR] Transaction failed.", flush=True)
-            if self.token_id:
-                self._send_to_server(
-                    {
-                        "type": "TRANSACTION_REPORT",
-                        "token_id": self.token_id,
-                        "object_id": object_id,
-                        "outcome": "fail",
-                    }
-                )
+            print("[ERROR] Transaction failed (seller rejected or item missing).", flush=True)
             return
 
         if resp.get("udp"):

@@ -349,6 +349,19 @@ class Peer:
         except Exception as e:
             logging.warning("seller tx success report: %s", e)
 
+    def _report_seller_tx_failure(self, oid, reason):
+        if not self.token_id:
+            return
+        try:
+            self._send_to_server({
+                "type": "SELLER_TX_FAILURE",
+                "token_id": self.token_id,
+                "object_id": oid,
+                "reason": reason,
+            })
+        except Exception as e:
+            logging.warning("seller tx failure report: %s", e)
+
     def _report_tx(self, oid, outcome):
         try:
             self._send_to_server({
@@ -382,8 +395,7 @@ class Peer:
             s.close()
 
             if not resp.get("success"):
-                logging.warning("Transaction FAILED for %s", oid)
-                self._report_tx(oid, "fail")
+                logging.warning("Transaction FAILED for %s (seller declined or missing item)", oid)
                 return
 
             if resp.get("udp"):
@@ -429,6 +441,7 @@ class Peer:
                 "metadata": "",
             })
             logging.warning("Sell failed: %s not in shared_directory", oid)
+            self._report_seller_tx_failure(oid, "item_not_found")
             return
 
         with open(fpath, "r", encoding="utf-8") as fh:
@@ -476,6 +489,7 @@ class Peer:
             self._report_seller_tx(oid)
         else:
             logging.warning("UDP transfer incomplete for %s — file kept", oid)
+            self._report_seller_tx_failure(oid, "udp_incomplete")
 
     # ------------------------------------------------------------------ #
     #  Main entry                                                          #
