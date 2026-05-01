@@ -89,8 +89,10 @@ class GbnUdpSender:
             return True
         num_packets = len(self.packets)
         base = 0
+        next_seq = 0
         lock = threading.Lock()
         ack_next = 0
+        timer_started = None
 
         def recv_loop():
             nonlocal ack_next
@@ -112,27 +114,47 @@ class GbnUdpSender:
         try:
             while base < num_packets:
                 with lock:
-                    upper = min(base + self.window, num_packets)
-                    for s in range(base, upper):
-                        self.sock.sendto(self.packets[s], self.dest)
-                        if s == num_packets - 1:
-                            self.log("GBN sender: SEND seq=%d (EOT)" % s)
-                        else:
-                            self.log("GBN sender: SEND seq=%d" % s)
-                deadline = self.time_fn() + self.timeout_sec
-                while self.time_fn() < deadline:
-                    with lock:
-                        if ack_next >= num_packets:
-                            return True
+                    observed_ack = ack_next
+                if observed_ack > base:
+                    base = min(observed_ack, num_packets)
+                    if base >= num_packets:
+                        return True
+                    if base == next_seq:
+                        timer_started = None
+                    else:
+                        timer_started = self.time_fn()
+
+                while next_seq < min(base + self.window, num_packets):
+                    self.sock.sendto(self.packets[next_seq], self.dest)
+                    if next_seq == num_packets - 1:
+                        self.log("GBN sender: SEND seq=%d (EOT)" % next_seq)
+                    else:
+                        self.log("GBN sender: SEND seq=%d" % next_seq)
+                    if base == next_seq:
+                        timer_started = self.time_fn()
+                    next_seq += 1
+
+                if timer_started is None:
                     time.sleep(0.01)
+                    continue
+
+                if self.time_fn() - timer_started < self.timeout_sec:
+                    time.sleep(0.01)
+                    continue
+
                 with lock:
                     if ack_next >= num_packets:
                         return True
-                    self.log("GBN sender: TIMEOUT base=%d retransmit" % base)
-                    for s in range(base, min(base + self.window, num_packets)):
-                        self.log("GBN sender: RETRANSMIT seq=%d" % s)
-                        self.sock.sendto(self.packets[s], self.dest)
-                    base = max(base, ack_next)
+                    base = max(base, min(ack_next, num_packets))
+                if base >= num_packets:
+                    return True
+
+                self.log("GBN sender: TIMEOUT base=%d retransmit" % base)
+                resend_until = min(next_seq, base + self.window, num_packets)
+                for s in range(base, resend_until):
+                    self.log("GBN sender: RETRANSMIT seq=%d" % s)
+                    self.sock.sendto(self.packets[s], self.dest)
+                timer_started = self.time_fn()
         finally:
             if self.close_socket:
                 try:
@@ -193,8 +215,7 @@ def receive_metadata(
 
         if seq != next_exp:
             log("GBN receiver: DROP out_of_order got=%d expected=%d" % (seq, next_exp))
-            if peer_addr is not None:
-                ack_to(peer_addr)
+            ack_to(peer_addr or addr)
             continue
 
         if rng.random() < drop_data_prob:

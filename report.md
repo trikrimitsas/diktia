@@ -1,4 +1,4 @@
-# Αναφορα Εργασιας - Κατανεμημενο Συστημα Δημοπρασιων (Φαση 1)
+# Αναφορα Εργασιας - Κατανεμημενο Συστημα Δημοπρασιων (Φαση 2)
 
 **Μαθημα:** Δικτυα Υπολογιστων - Εαρινο Εξαμηνο 2025-2026  
 **Γλωσσα υλοποιησης:** Python  
@@ -7,7 +7,8 @@
 
 ## 1. Συντομη Αναλυση της Υλοποιησης
 
-Η υλοποιηση ειναι ενα μικρο online συστημα δημοπρασιων πανω σε TCP sockets.
+Η υλοποιηση ειναι ενα μικρο online συστημα δημοπρασιων πανω σε TCP sockets
+για τον κεντρικο συντονισμο και UDP sockets για την Phase 2 P2P μεταφορα.
 Υπαρχει ενας κεντρικος **Auction Server** και πεντε **Peers/Bidders**
 (alice, bob, carol, dave, eve).
 
@@ -16,7 +17,8 @@
 - να δει τα bids που τρέχουν,
 - να κανει bid,
 - να λαβει ειδοποιησεις σε πραγματικο χρονο,
-- σε περιπτωση που κερδισει την δημοπρασια, να παραλαβει το αρχειο του αντικειμενου με P2P μεταφορα.
+- σε περιπτωση που κερδισει την δημοπρασια, να παραλαβει το αρχειο του
+  αντικειμενου με P2P UDP Go-Back-N μεταφορα.
 
 ### Αρχιτεκτονικη
 
@@ -25,8 +27,8 @@
   τη συνδεση.
 - **Server -> Peer**: Push notifications μεσω του ServerSocket καθε peer
   (νεα bids, ληξη δημοπρασιας, ακυρωση, check_active).
-- **Peer -> Peer**: P2P transaction μεσω του ServerSocket του πωλητη
-  (μεταφορα αρχειου metadata μετα την κατοχυρωση ενος item).
+- **Peer -> Peer**: P2P transaction αρχικα με TCP handshake προς τον πωλητη
+  και μεταφορα metadata με UDP Go-Back-N.
 
 ### Πρωτοκολλο Επικοινωνιας
 
@@ -34,23 +36,31 @@
 payload σε UTF-8**. Αυτο εξασφαλιζει αξιοπιστη ανταλλαγη μηνυματων μεταβλητου
 μεγεθους πανω απο TCP.
 
+Για την P2P μεταφορα της Φασης 2 χρησιμοποιειται UDP Go-Back-N με 64-byte
+datagrams, sequence number, cumulative ACK, window size 3 και timeout 2s.
+Ο receiver απορριπτει out-of-order packets και μπορει να προσομοιωσει packet
+loss / ACK loss για demo.
+
 ### Concurrency
 
 - Ο server χρησιμοποιει **threading** (ενα thread ανα συνδεση + ενα daemon
   thread για τη διαχειριση δημοπρασιων - auction manager loop).
 - Ολες οι κοινοχρηστες δομες δεδομενων προστατευονται με **threading.Lock**
   για αποφυγη race conditions.
-- Ο server διατηρει μετρητες `num_auctions_seller` και `num_auctions_bidder`
-  για καθε χρηστη, ενημερωνοντας τους στη ληξη καθε δημοπρασιας.
+- Ο server διατηρει μετρητες `num_auctions_seller`, `num_auctions_bidder`
+  και `reputation` για καθε χρηστη. Το bidder counter και το reputation
+  ενημερωνονται μετα απο το τελικο transaction result.
 - Καθε peer τρεχει 4 threads: main, peer_server, item_generator, auction_poller.
 
 ### FCFS Ουρα Δημοπρασιων
 
 Ο Auction Server διατηρει `collections.deque` για τα αιτηματα δημοπρασιας.
-Τα αντικειμενα εξυπηρετουνται με σειρα αφιξης (FCFS):
-πρωτο μπηκε, πρωτο δημοπρατειται. Οταν τελειωσει μια δημοπρασια,
-ξεκιναει αυτοματα η επομενη. Αν η ουρα ειναι αδεια,
-ο auction manager thread αναμενει νεο αιτημα μεσω `threading.Event`.
+Τα αντικειμενα εξυπηρετουνται με σειρα αφιξης (FCFS), με την Phase 2
+επεκταση οτι ο server μπορει να εχει μεχρι δυο ενεργες δημοπρασιες
+ταυτοχρονα. Οταν υπαρχουν τουλαχιστον δυο αντικειμενα στην ουρα, συγκρινεται
+το reputation των πωλητων των δυο πρωτων αντικειμενων: αν ο δευτερος εχει
+υψηλοτερο reputation, επιλεγεται πρωτος. Σε ισοβαθμια ή οταν ο πρωτος εχει
+μεγαλυτερο reputation, παραμενει FCFS.
 
 ### Timer Reset
 
@@ -58,6 +68,16 @@ payload σε UTF-8**. Αυτο εξασφαλιζει αξιοπιστη αντ�
 επαναφερεται: `end_time = time.time() + auction_duration`. Αυτο εξασφαλιζει
 οτι μετα απο καθε νεο bid υπαρχει ξανα ολοκληρο χρονικο παραθυρο
 για counteroffer.
+
+### Phase 2 bidding, fallback και reputation
+
+Οι αυτοματοποιημενοι peers διατηρουν 60% πιθανοτητα ενδιαφεροντος. Σε κανονικη
+φαση δημοπρασιας κανουν bid με αυξηση εως 10%, ενω στο τελευταιο 10% της
+διαρκειας μπορουν να φτασουν εως 20%. Ο server κρατα bid ranking ανα
+`object_id`. Αν ο highest bidder ακυρωσει ή αποτυχει μετα την κατοχυρωση,
+το reputation του ενημερωνεται με `new = 0.75 * old + 0.25 * 0` και ο server
+δοκιμαζει τον επομενο eligible bidder. Σε επιτυχες transaction χρησιμοποιειται
+outcome 1 και η δημοπρασια ολοκληρωνεται.
 
 ---
 
@@ -85,9 +105,9 @@ payload σε UTF-8**. Αυτο εξασφαλιζει αξιοπιστη αντ�
 
 Το `auction_server.py` αποτελει τον πυρηνα του συστηματος. Εδω
 υλοποιουνται η διαχειριση χρηστων/sessions, ο ελεγχος εγκυροτητας
-αιτηματων, η FCFS ουρα δημοπρασιων, ο ελεγχος ενεργοτητας πωλητη
+αιτηματων, η reputation-aware ουρα δημοπρασιων, ο ελεγχος ενεργοτητας πωλητη
 (`checkActive`), ο μηχανισμος timer reset μετα απο καθε αποδεκτο bid,
-και οι ειδοποιησεις προς τους συμμετεχοντες. Με αλλα λογια,
+η επιλογη fallback bidder και οι ειδοποιησεις προς τους συμμετεχοντες. Με αλλα λογια,
 συγκεντρωνει τη συνολικη λογικη συντονισμου της πλατφορμας.
 
 ### peer.py
@@ -98,6 +118,17 @@ payload σε UTF-8**. Αυτο εξασφαλιζει αξιοπιστη αντ�
 την κατοχυρωση. Επιπλεον, εκκινει τα απαραιτητα βοηθητικα threads
 ωστε ο peer να δρα ταυτοχρονα ως client και ως endpoint για εισερχομενα
 μηνυματα/requests.
+
+### gbn_udp.py
+
+Το `gbn_udp.py` υλοποιει το Phase 2 Go-Back-N πρωτοκολλο πανω απο UDP:
+packetization metadata σε 64-byte datagrams, cumulative ACKs, sliding window
+3 packets, timeout/retransmit και receiver-side drop simulation.
+
+### reputation.py
+
+Το `reputation.py` περιεχει τον καθαρο υπολογισμο reputation με beta 0.25,
+ωστε να ελεγχεται ανεξαρτητα απο sockets και threads.
 
 ### run_demo.py
 
@@ -111,8 +142,14 @@ server και πολλαπλων peers, ωστε να επιβεβαιωνετα
 Το `test_scenarios.py` υλοποιει αναπαραγωγιμα, καθορισμενα σεναρια
 ελεγχου που καλυπτουν τις κρισιμες απαιτησεις της εργασιας:
 register/login/logout, bidding, ληξη δημοπρασιας, P2P μεταφορα,
-ακυρωση δημοπρασιας και FCFS συμπεριφορα ουρας. Ετσι, λειτουργει
+ακυρωση δημοπρασιας, Phase 2 UDP transfer και συμπεριφορα ουρας. Ετσι, λειτουργει
 ως μεσο τεκμηριωμενης επαληθευσης της ορθοτητας του συστηματος.
+
+### test_phase2_units.py
+
+Το `test_phase2_units.py` περιεχει στοχευμενα unit tests για reputation,
+Go-Back-N packetization/ACK behavior, reputation-aware queue selection,
+fallback bidder selection και το late-bid 20% οριο.
 
 ### Σχεσεις μεταξυ αρχειων
 
@@ -194,8 +231,10 @@ Terminal 6:  .\\.venv\\Scripts\\python.exe peer.py 5 eve evepass --no-auto-items
 python test_scenarios.py
 ```
 Εκτελει σειριακα ολα τα σεναρια του report και παραγει την εξοδο των screenshots.
-Το σεναριο ειναι deterministic και κανει εσωτερικο reset για το βασικο auction αντικειμενο,
-αλλα η προετοιμασια που δινεται πιο πανω παραμενει προτεινομενη για καθαρο περιβαλλον.
+Το σεναριο ειναι deterministic και κανει εσωτερικο reset στα fixture αντικειμενα
+των alice/bob/carol/dave/eve, αφαιρωντας παλια `Object_*` και `user_*` demo
+αρχεια που μπορει να εχουν μεινει απο προηγουμενες εκτελεσεις. Η προετοιμασια
+που δινεται πιο πανω παραμενει χρησιμη οταν γινονται manual runs παραλληλα.
 
 ### Ρυθμισεις (config.py)
 
@@ -205,6 +244,11 @@ python test_scenarios.py
 - `CHECK_ACTIVE_INTERVAL = 5` — διαστημα ελεγχου liveness πωλητη
 - `BID_INTEREST_PROBABILITY = 0.60` (60% πιθανοτητα ενδιαφεροντος)
 - `BID_INCREMENT_FACTOR = 0.10` (NewBid = HighestBid * (1 + RAND/10))
+- `LATE_AUCTION_FRACTION = 0.10` και `LATE_BID_INCREMENT_FACTOR = 0.20`
+  για Phase 2 late bidding
+- `MAX_ACTIVE_AUCTIONS = 2` για δυο παραλληλες δημοπρασιες
+- `UDP_DROP_DATA_PROB` / `UDP_ACK_SEND_PROB` για προσομοιωση απωλειων UDP
+- `TRANSACTION_PROCEED_PROBABILITY = 0.70` για buyer proceed/cancel behavior
 
 ### Αποκλισεις απο τις Προδιαγραφες
 
@@ -290,20 +334,24 @@ push notification `NEW_BID_NOTIFY` με τα νεα στοιχεια. Αν το 
 **Peer-side (πωλητης/alice):** Λαμβανει `AUCTION_SOLD` με username αγοραστη
 και τελικη τιμη.
 
-**Server-side:** Ο server κατοχυρωνει το αντικειμενο, ενημερωνει τους
-μετρητες `num_auctions_seller` (alice +1) και `num_auctions_bidder` (dave +1)
-και προχωρα αυτοματα στο επομενο αντικειμενο της ουρας.
+**Server-side:** Ο server περνα τη δημοπρασια σε κατασταση `awarding`,
+στελνει τα στοιχεια του πωλητη στον τρεχοντα highest bidder και περιμενει
+transaction result. Ο bidder counter και το reputation ενημερωνονται μονο
+μετα απο επιτυχια/αποτυχια της συναλλαγης. Αν ο buyer ακυρωσει, δοκιμαζεται
+ο επομενος bidder απο το ranking.
 
 ### 4.7 Επιτυχης ολοκληρωση συναλλαγης (P2P transfer)
 
 ![Screenshot 6 - Successful P2P transaction](./screenshots/sc7-transaction.png)
 
-**Αγοραστης (dave):** Συνδεεται P2P στο ServerSocket του πωλητη (alice),
-στελνει `TRANSACTION_REQ`, λαμβανει το αρχειο metadata, το αποθηκευει
-στο `shared_directories/dave/` και στελνει `NOTIFY_PURCHASE` στον server.
+**Αγοραστης (dave):** Συνδεεται P2P στο TCP endpoint του πωλητη (alice),
+στελνει `TRANSACTION_REQ`, λαμβανει επιβεβαιωση UDP transfer, παραλαμβανει
+το metadata με Go-Back-N στο UDP socket του, το αποθηκευει στο
+`shared_directories/dave/` και στελνει `TRANSACTION_REPORT` στον server.
 
-**Πωλητης (alice):** Λαμβανει `TRANSACTION_REQ`, αποστελλει το αρχειο
-metadata και το **διαγραφει** απο το `shared_directories/alice/`.
+**Πωλητης (alice):** Λαμβανει `TRANSACTION_REQ`, packetizes το metadata σε
+64-byte UDP packets, το στελνει με Go-Back-N και το **διαγραφει** απο το
+`shared_directories/alice/` μονο αν ολοκληρωθει η μεταφορα.
 
 Στο screenshot φαινεται η κατασταση ολων των shared_directories μετα
 τη συναλλαγη: το `Alice_RolexSub.txt` εχει μεταφερθει απο alice -> dave.
@@ -326,10 +374,12 @@ metadata και το **διαγραφει** απο το `shared_directories/alic
 ![Screenshot 9 - FCFS queue demo with all remaining items](./screenshots/sc9-fcfs.png)
 
 Στο σεναριο 9, ολοι οι peers καταθετουν τα υπολοιπα αντικειμενα τους
-σε FCFS σειρα. Ο server τα εξυπηρετει ενα-ενα με σειρα αφιξης:
+σε σειρα ουρας. Στη Φαση 2 ο server μπορει να ξεκινησει μεχρι δυο ενεργες
+δημοπρασιες παραλληλα, ενω η επιλογη των δυο πρωτων θεσεων μπορει να
+επηρεαστει απο το seller reputation:
 
 1. **Bob_NikonFTn** (ACTIVE)
-2. Carol_PersianRug
+2. **Carol_PersianRug** (ACTIVE αν υπαρχει χωρητικοτητα)
 3. Dave_StampCollection
 4. Alice_VinylRecords
 5. Carol_OilPainting

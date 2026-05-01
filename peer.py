@@ -137,6 +137,15 @@ class Peer:
         except Exception:
             return None
 
+    @staticmethod
+    def calculate_auto_bid(highest_bid, remaining_time, auction_duration, random_fraction):
+        if auction_duration and auction_duration > 0:
+            late = remaining_time <= auction_duration * config.LATE_AUCTION_FRACTION
+        else:
+            late = False
+        inc = config.LATE_BID_INCREMENT_FACTOR if late else config.BID_INCREMENT_FACTOR
+        return round(float(highest_bid) * (1 + float(random_fraction) * inc), 2)
+
     # ------------------------------------------------------------------ #
     #  Item generator thread                                               #
     # ------------------------------------------------------------------ #
@@ -235,13 +244,7 @@ class Peer:
                 dur = details.get("auction_duration", rem)
                 if rem <= 0:
                     continue
-                if dur and dur > 0:
-                    late = rem <= dur * config.LATE_AUCTION_FRACTION
-                else:
-                    late = False
-                inc = (config.LATE_BID_INCREMENT_FACTOR if late
-                       else config.BID_INCREMENT_FACTOR)
-                new_bid = round(hbid * (1 + random.random() * inc), 2)
+                new_bid = self.calculate_auto_bid(hbid, rem, dur, random.random())
                 br = self._send_to_server({
                     "type": "PLACE_BID",
                     "token_id": self.token_id,

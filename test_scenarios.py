@@ -3,7 +3,7 @@ test_scenarios.py
 Controlled demonstration of all required auction system scenarios.
 Produces clearly separated output for each case (peer-side + server-side).
 """
-import socket, threading, logging, time, os, sys
+import socket, threading, logging, time, os, sys, shutil
 import config
 import gbn_udp
 from protocol import send_message, recv_message
@@ -13,6 +13,29 @@ tokens = {}
 _listeners = {}
 udp_ports = {}
 
+FIXTURE_ITEMS = {
+    "alice": {
+        "Alice_RolexSub.txt": '[object_id: Alice_RolexSub; description: "Vintage 1965 Rolex Submariner"; start_bid: "50.00"; auction_duration: "25"]',
+        "Alice_VinylRecords.txt": '[object_id: Alice_VinylRecords; description: "Beatles White Album Vinyl (1968)"; start_bid: "40.00"; auction_duration: "20"]',
+    },
+    "bob": {
+        "Bob_LeicaM3.txt": '[object_id: Bob_LeicaM3; description: "Leica M3 Rangefinder Camera (1954)"; start_bid: "120.00"; auction_duration: "35"]',
+        "Bob_NikonFTn.txt": '[object_id: Bob_NikonFTn; description: "1970s Nikon Photomic FTn Camera"; start_bid: "80.00"; auction_duration: "30"]',
+    },
+    "carol": {
+        "Carol_OilPainting.txt": '[object_id: Carol_OilPainting; description: "19th Century Oil Painting - Seascape"; start_bid: "150.00"; auction_duration: "35"]',
+        "Carol_PersianRug.txt": '[object_id: Carol_PersianRug; description: "18th Century Antique Persian Rug"; start_bid: "200.00"; auction_duration: "30"]',
+    },
+    "dave": {
+        "Dave_GoldCoin.txt": '[object_id: Dave_GoldCoin; description: "Roman Aureus Gold Coin (100 AD)"; start_bid: "250.00"; auction_duration: "40"]',
+        "Dave_StampCollection.txt": '[object_id: Dave_StampCollection; description: "Victorian Penny Black Stamp Collection"; start_bid: "100.00"; auction_duration: "25"]',
+    },
+    "eve": {
+        "Eve_AntiquMap.txt": '[object_id: Eve_AntiquMap; description: "Antique World Map (1820)"; start_bid: "75.00"; auction_duration: "35"]',
+        "Eve_HP_FirstEd.txt": '[object_id: Eve_HP_FirstEd; description: "Harry Potter 1st Edition (1997)"; start_bid: "30.00"; auction_duration: "40"]',
+    },
+}
+
 def pr(msg):
     print("[%s] %s" % (time.strftime("%H:%M:%S"), msg), flush=True)
 
@@ -20,6 +43,38 @@ def banner(title):
     print("\n" + "=" * 62, flush=True)
     print("  %s" % title, flush=True)
     print("=" * 62, flush=True)
+
+def reset_shared_directories():
+    """Restore deterministic demo fixtures and remove generated auto-peer files."""
+    root = "shared_directories"
+    os.makedirs(root, exist_ok=True)
+    fixture_names = {
+        fname
+        for peer_items in FIXTURE_ITEMS.values()
+        for fname in peer_items
+    }
+
+    for name in list(os.listdir(root)):
+        full = os.path.join(root, name)
+        if not os.path.isdir(full):
+            continue
+        if name.startswith("user_"):
+            shutil.rmtree(full)
+            continue
+        for fname in list(os.listdir(full)):
+            fpath = os.path.join(full, fname)
+            if fname.startswith("Object_") and fname.endswith(".txt"):
+                os.remove(fpath)
+                continue
+            if fname in fixture_names and fname not in FIXTURE_ITEMS.get(name, {}):
+                os.remove(fpath)
+
+    for peer, files in FIXTURE_ITEMS.items():
+        peer_dir = os.path.join(root, peer)
+        os.makedirs(peer_dir, exist_ok=True)
+        for fname, content in files.items():
+            with open(os.path.join(peer_dir, fname), "w", encoding="utf-8") as fh:
+                fh.write(content)
 
 def send_req(msg):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -232,19 +287,7 @@ def main():
     config.TRANSACTION_PROCEED_PROBABILITY = 1.0
     config.UDP_DROP_DATA_PROB = 0.0
     config.UDP_ACK_SEND_PROB = 1.0
-
-    # Alice_RolexSub is the auctioned item in scenario 3-6; it moves to dave
-    # each run. Reset it to alice's folder so the demo works every time.
-    _alice_dir = os.path.join("shared_directories", "alice")
-    _rolex_alice = os.path.join(_alice_dir, "Alice_RolexSub.txt")
-    _rolex_dave  = os.path.join("shared_directories", "dave", "Alice_RolexSub.txt")
-    if not os.path.exists(_rolex_alice):
-        os.makedirs(_alice_dir, exist_ok=True)
-        with open(_rolex_alice, "w", encoding="utf-8") as _f:
-            _f.write('[object_id: Alice_RolexSub; description: "Vintage 1965 Rolex Submariner"; '
-                     'start_bid: "50.00"; auction_duration: "25"]')
-    if os.path.exists(_rolex_dave):
-        os.remove(_rolex_dave)
+    reset_shared_directories()
 
     logging.basicConfig(level=logging.INFO,
                         format="[SERVER %(asctime)s] %(message)s",

@@ -1,0 +1,138 @@
+# PRD: Phase 2 Auction System Implementation
+
+## Problem Statement
+
+Η υπάρχουσα υλοποίηση καλύπτει τις βασικές απαιτήσεις της Φάσης 1 του κατανεμημένου συστήματος δημοπρασιών: εγγραφή και σύνδεση peers, καταχώριση αντικειμένων, μία ενεργή δημοπρασία κάθε φορά, bidding μέσω TCP, ενημερώσεις προς peers, ακύρωση λόγω αποσύνδεσης πωλητή και peer-to-peer μεταφορά metadata μετά την κατοχύρωση.
+
+Η Φάση 2 ζητά ουσιαστική επέκταση της ίδιας εφαρμογής. Η υπάρχουσα βάση πρέπει να εξελιχθεί ώστε να υποστηρίζει έως δύο ενεργές δημοπρασίες, πιο σύνθετους κανόνες bidding, UDP peer-to-peer transaction με Go-Back-N, προσομοίωση απωλειών, δυνατότητα ακύρωσης από highest bidder, fallback στον επόμενο bidder και reputation score που επηρεάζει την αξιοπιστία αγοραστών και την επιλογή αντικειμένων από την ουρά.
+
+## Solution
+
+Η λύση είναι να επεκταθεί ο Auction Server και οι peers γύρω από έναν σαφέστερο πυρήνα δημοπρασιών, με διακριτές έννοιες για ενεργές δημοπρασίες, ιστορικό bids, κατάταξη υποψήφιων αγοραστών, reputation updates και transaction result reporting.
+
+Το σύστημα θα υποστηρίζει μέχρι δύο ενεργές δημοπρασίες ταυτόχρονα. Τα υπάρχοντα TCP request/response μηνύματα θα παραμείνουν για register, login, logout, requestAuction, current auction queries, auction details, bids και ενημέρωση του server για αποτέλεσμα transaction. Το peer-to-peer transaction όμως θα περάσει σε UDP και θα χρησιμοποιεί Go-Back-N για αξιόπιστη μεταφορά metadata αρχείου.
+
+Η συμπεριφορά bidding θα επεκταθεί ώστε, στο τελευταίο 10% της διάρκειας μιας δημοπρασίας, οι αυτοματοποιημένοι peers να μπορούν να αυξήσουν το bid έως 20% αντί για έως 10%. Ο server θα κρατά πλήρες bid ranking ανά auction ώστε, αν ο highest bidder ακυρώσει ή αποτύχει, να μπορεί να επιλεγεί ο επόμενος διαθέσιμος bidder. Το reputation score κάθε χρήστη θα ξεκινά από 1 και θα ενημερώνεται με τον τύπο `new = 0.75 * old + 0.25 * outcome`, όπου outcome είναι 1 για επιτυχημένο transaction και 0 για ακύρωση/αποτυχία από bidder.
+
+## User Stories
+
+1. As a course evaluator, I want the Phase 2 implementation to preserve all Phase 1 behavior, so that existing grading scenarios still pass.
+2. As a peer, I want to register with username and password, so that I can participate in the auction system.
+3. As a peer, I want to log in and receive a session token, so that the server can authenticate my requests.
+4. As a peer, I want to log out, so that my session is invalidated and queued inactive items are removed.
+5. As a seller peer, I want to submit metadata for available objects, so that the server can schedule them for auction.
+6. As an Auction Server, I want to keep an auction queue, so that submitted objects can be selected for auction.
+7. As an Auction Server, I want to run up to two active auctions at once, so that Phase 2 concurrency requirements are satisfied.
+8. As an Auction Server, I want each active auction to be independently addressable by object id, so that bids and details apply to the correct auction.
+9. As a bidder peer, I want to see the current active auctions, so that I can decide which object to inspect.
+10. As a bidder peer, I want to request details for a chosen auction, so that I can see seller token, highest bid and remaining time.
+11. As a bidder peer, I want automated interest to remain probability-based at 60%, so that Phase 1 behavior is preserved.
+12. As a bidder peer, I want normal bids to increase by at most 10%, so that the original bidding rule remains intact.
+13. As a bidder peer, I want late bids in the final 10% of auction duration to increase by at most 20%, so that Phase 2 late bidding behavior is implemented.
+14. As an Auction Server, I want to reject bids that are not higher than the current highest bid, so that auction ordering remains valid.
+15. As an Auction Server, I want to notify active peers when a new bid is accepted, so that peers observe live auction updates.
+16. As an Auction Server, I want to maintain a bid ranking per auction, so that fallback winners can be selected if a bidder cancels.
+17. As an Auction Server, I want to exclude the seller from bidding on their own item, so that auction integrity is preserved.
+18. As an Auction Server, I want to finalize each auction independently, so that one auction ending does not block another active auction.
+19. As a winning bidder, I want to receive seller connection details when I win, so that I can start the peer-to-peer transaction.
+20. As a winning bidder, I want to proceed with transaction with 70% probability, so that Phase 2 behavior can simulate successful buyer follow-through.
+21. As a winning bidder, I want to cancel with 30% probability, so that the system can exercise reputation penalties and fallback winner logic.
+22. As an Auction Server, I want to receive transaction success or failure from the buyer/seller, so that ownership and reputation can be updated.
+23. As an Auction Server, I want to award the item to the second-highest bidder when the highest bidder cancels, so that the auction can still complete.
+24. As an Auction Server, I want to continue down the bid ranking if fallback bidders are offline or cancel, so that the next eligible bidder can be tried.
+25. As an Auction Server, I want to cancel the auction if no eligible bidder remains, so that the system reaches a clear terminal state.
+26. As a seller peer, I want to transfer metadata over UDP, so that the Phase 2 transport requirement is satisfied.
+27. As a buyer peer, I want to receive metadata over UDP, so that I can complete the peer-to-peer transaction without TCP file transfer.
+28. As a seller peer, I want metadata to be split into 64-byte packets, so that Go-Back-N packetization follows the spec.
+29. As a seller peer, I want a Go-Back-N send window of 3 packets, so that transmission follows the required sliding window size.
+30. As a seller peer, I want every UDP data packet to include a sequence number, so that the buyer can detect order and loss.
+31. As a buyer peer, I want to discard out-of-order packets, so that Go-Back-N semantics are preserved.
+32. As a buyer peer, I want to send cumulative ACKs, so that the seller can advance the send window.
+33. As a seller peer, I want to retransmit from the oldest unacknowledged packet after 2 seconds, so that lost packets are recovered.
+34. As a buyer peer, I want to randomly drop 20% of incoming packets during demo/test mode, so that unreliable UDP is simulated.
+35. As a buyer peer, I want to randomly send ACKs with 80% probability during demo/test mode, so that lost ACKs are simulated.
+36. As a buyer peer, I want to reconstruct the metadata file only after all packets are received in order, so that the saved object is complete.
+37. As a seller peer, I want to delete the sold object after confirmed transfer, so that ownership moves to the buyer.
+38. As a buyer peer, I want the purchased metadata file saved in my shared directory, so that local state reflects ownership.
+39. As an Auction Server, I want every user to have a reputation score initialized to 1, so that all users start from neutral/full reputation.
+40. As an Auction Server, I want successful buyers to receive a positive reputation update, so that reliable behavior is rewarded.
+41. As an Auction Server, I want cancelling buyers to receive a negative reputation update, so that unreliable behavior is penalized.
+42. As an Auction Server, I want reputation updates to use beta 0.25, so that the spec formula is followed exactly.
+43. As an Auction Server, I want seller reputation to influence queue selection between the first and second queued items, so that Phase 2 reputation-aware scheduling is implemented.
+44. As a demo operator, I want deterministic scenarios for reputation increase and decrease, so that screenshots can be captured reliably.
+45. As a demo operator, I want visible logs for Go-Back-N send, drop, ACK, timeout and retransmit events, so that screenshots prove protocol behavior.
+46. As a demo operator, I want visible logs for two simultaneous auctions, so that screenshots prove concurrency behavior.
+47. As a developer, I want isolated protocol logic for Go-Back-N, so that it can be tested without running the full auction server.
+48. As a developer, I want isolated reputation calculation, so that score updates can be tested with simple inputs.
+49. As a developer, I want isolated auction state transitions, so that bidding, finalization and fallback can be tested without real sockets.
+50. As a course evaluator, I want the report to describe Phase 2 differences and evidence, so that the submitted work is easy to inspect.
+
+## Implementation Decisions
+
+- Treat the two-active-auctions statement in the Phase 2 overview as a binding requirement, despite the later reused wording that says one auction at a time.
+- Replace the single active-auction state with a collection of active auctions capped at two.
+- Keep `object_id` as the routing key for auction details, bids, notifications and transaction results.
+- Maintain backward-compatible request names where practical, but allow current-auction responses to return multiple active auctions.
+- Introduce an auction state module that owns auction lifecycle, active auction capacity, timer handling, bid ranking and terminal states.
+- Introduce a bid ranking model that stores bidder token, username, bid amount and eligibility status per auction.
+- Extend accepted bid handling so each auction keeps enough history to select fallback winners after cancellation.
+- Add reputation to registered user state with initial value 1.
+- Implement reputation update as a small pure calculation using beta 0.25.
+- Apply positive reputation updates only after confirmed successful transaction.
+- Apply negative reputation updates when a bidder cancels or fails after being awarded the item.
+- Add queue selection logic that compares the seller reputation of the first two queued items and chooses the second item when the first seller has lower reputation.
+- Preserve FCFS behavior when the queue has one item or when the first seller reputation is greater than or equal to the second seller reputation.
+- Keep account/session communication over TCP with the existing length-prefixed JSON protocol.
+- Implement UDP only for peer-to-peer metadata transfer.
+- Create a Go-Back-N transfer module with a small interface for sending metadata bytes and receiving metadata bytes.
+- Packetize metadata into 64-byte chunks with sequence numbers and end-of-transfer metadata.
+- Use sender window size 3 and timeout 2 seconds.
+- Use cumulative ACK semantics at the receiver.
+- Simulate packet and ACK drops only in the buyer-side UDP receive/ACK path, configurable for deterministic tests and normal demo randomness.
+- Add transaction result messages so the server can distinguish success from buyer cancellation/failure.
+- Ensure seller file deletion happens only after successful transfer confirmation.
+- Ensure buyer file creation happens only after full metadata reconstruction.
+- Keep locking around shared server structures: users, sessions, auction queue and active auctions.
+- Avoid holding server locks while performing network calls to peers.
+- Update the manual client so a human can inspect multiple active auctions, bid on a chosen auction, and trigger or observe UDP transaction behavior.
+- Update the automated peer so random bidding, late-bid behavior, transaction proceed/cancel probability and UDP transfer are covered.
+- Update the deterministic demo so it demonstrates the new Phase 2 requirements and produces screenshot-friendly logs.
+- Update the report to document the Phase 2 protocol changes, reputation behavior, two-auction behavior, and Go-Back-N evidence.
+
+## Testing Decisions
+
+- Good tests should assert external behavior and protocol outcomes, not private implementation details.
+- Unit-test reputation calculation with success and failure outcomes, including repeated updates.
+- Unit-test auction queue selection with equal reputation, first-higher reputation, first-lower reputation and single-item queue cases.
+- Unit-test bid ranking and fallback winner selection with multiple bidders, cancellations and offline bidders.
+- Unit-test late-bid calculation boundaries so normal bids cap at 10% and late bids cap at 20%.
+- Unit-test Go-Back-N packetization into 64-byte chunks.
+- Unit-test Go-Back-N receiver behavior for in-order packets, out-of-order packets, duplicate packets and cumulative ACK generation.
+- Unit-test Go-Back-N sender behavior for ACK advancement and timeout retransmission from the oldest unacknowledged packet.
+- Integration-test a successful UDP transaction where buyer receives metadata and seller deletes the original file.
+- Integration-test dropped data packets and dropped ACKs using deterministic random seeds or injectable drop decisions.
+- Integration-test buyer cancellation followed by award to the second-highest bidder.
+- Integration-test two simultaneous auctions with independent bids, timers and finalization.
+- Integration-test seller disconnect cancellation for one active auction without corrupting another active auction.
+- Regression-test Phase 1 scenarios: register, duplicate register, login, duplicate login, requestAuction, current auction details, successful bid, rejected bid, auction award, successful transaction, seller disconnect cancellation and logout.
+- Use the existing deterministic scenario script as prior art for end-to-end scenario style, extending it rather than replacing it wholesale.
+- Keep protocol module tests free from real sleeps where possible by injecting timeout/clock behavior or using short controlled timeouts.
+
+## Out of Scope
+
+- Persistent storage across server restarts.
+- Authentication security beyond the existing username/password and token model.
+- Encryption or integrity protection for UDP packets.
+- A graphical user interface.
+- Deployment outside local execution on one machine or LAN-style host/port configuration.
+- Full fairness algorithms beyond the exact reputation comparison required between the first two queued items.
+- Rewriting the project into another language or framework.
+- Replacing the existing TCP control protocol with HTTP, gRPC or another protocol.
+
+## Further Notes
+
+The highest-risk ambiguity is the Phase 2 wording around active auctions: the overview says the server may have two auctions in progress, while the later startAuction section repeats Phase 1 wording about one auction at a time. This PRD resolves the ambiguity by implementing up to two active auctions, because it is the explicit new Phase 2 change.
+
+The second highest-risk area is transaction finalization. The server must not update buyer counters or reputation merely when an auction timer expires; it should wait for transaction success/failure. This also means the server needs a clear temporary awarded state while it waits for the highest bidder, then fallback bidders if necessary.
+
+The third highest-risk area is Go-Back-N observability. The implementation should log packet sends, packet drops, ACK sends, ACK drops, timeout and retransmission events clearly enough to support the required screenshots.
