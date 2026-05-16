@@ -7,6 +7,7 @@ import os
 import sys
 
 import config
+import gbn_udp
 from protocol import send_message, recv_message
 
 
@@ -20,6 +21,9 @@ class Peer:
         self.shared_dir = os.path.join("shared_directories", username)
         self.item_counter = 0
         self.peer_port = None
+        self.udp_port = None
+        self.udp_sock = None
+        self.udp_lock = threading.Lock()
         self.auto_generate_items = auto_generate_items
 
         os.makedirs(self.shared_dir, exist_ok=True)
@@ -90,6 +94,7 @@ class Peer:
                 "items": items,
                 "ip_address": config.SERVER_HOST,
                 "port": self.peer_port,
+                "udp_port": self.udp_port,
             })
             if items:
                 logging.info("requestAuction: %s", resp["message"])
@@ -132,6 +137,15 @@ class Peer:
         except Exception:
             return None
 
+    @staticmethod
+    def calculate_auto_bid(highest_bid, remaining_time, auction_duration, random_fraction):
+        if auction_duration and auction_duration > 0:
+            late = remaining_time <= auction_duration * config.LATE_AUCTION_FRACTION
+        else:
+            late = False
+        inc = config.LATE_BID_INCREMENT_FACTOR if late else config.BID_INCREMENT_FACTOR
+        return round(float(highest_bid) * (1 + float(random_fraction) * inc), 2)
+
     # ------------------------------------------------------------------ #
     #  Item generator thread                                               #
     # ------------------------------------------------------------------ #
@@ -170,6 +184,7 @@ class Peer:
                         "items": [item],
                         "ip_address": config.SERVER_HOST,
                         "port": self.peer_port,
+                        "udp_port": self.udp_port,
                     })
                     logging.info("Queued %s: %s",
                                  item["object_id"], resp["message"])
@@ -198,41 +213,46 @@ class Peer:
             if not resp.get("active"):
                 return
 
-            oid = resp["object_id"]
-            desc = resp["description"]
-            logging.info("Current auction: %s - %s", oid, desc)
+            auctions = resp.get("auctions")
+            if not auctions:
+                auctions = [{"object_id": resp["object_id"],
+                             "description": resp.get("description", "")}]
+            for entry in auctions:
+                oid = entry["object_id"]
+                desc = entry.get("description", "")
+                logging.info("Current auction: %s - %s", oid, desc)
 
-            interested = random.random() <= config.BID_INTEREST_PROBABILITY
-            if not interested:
-                logging.info("Not interested in %s (coin flip)", oid)
-                return
+                interested = random.random() <= config.BID_INTEREST_PROBABILITY
+                if not interested:
+                    logging.info("Not interested in %s (coin flip)", oid)
+                    continue
 
-            details = self._send_to_server({
-                "type": "GET_AUCTION_DETAILS",
-                "token_id": self.token_id,
-            })
-            if not details.get("success"):
-                return
+                details = self._send_to_server({
+                    "type": "GET_AUCTION_DETAILS",
+                    "token_id": self.token_id,
+                    "object_id": oid,
+                })
+                if not details.get("success"):
+                    continue
 
-            if details["seller_token_id"] == self.token_id:
-                logging.info("Skipping own item %s", oid)
-                return
+                if details["seller_token_id"] == self.token_id:
+                    logging.info("Skipping own item %s", oid)
+                    continue
 
-            hbid = details["highest_bid"]
-            rem = details["remaining_time"]
-            if rem <= 0:
-                return
-
-            new_bid = round(
-                hbid * (1 + random.random() * config.BID_INCREMENT_FACTOR), 2)
-            br = self._send_to_server({
-                "type": "PLACE_BID",
-                "token_id": self.token_id,
-                "object_id": oid,
-                "bid": new_bid,
-            })
-            logging.info("placeBid %.2f on %s: %s",
-                          new_bid, oid, br["message"])
+                hbid = details["highest_bid"]
+                rem = details["remaining_time"]
+                dur = details.get("auction_duration", rem)
+                if rem <= 0:
+                    continue
+                new_bid = self.calculate_auto_bid(hbid, rem, dur, random.random())
+                br = self._send_to_server({
+                    "type": "PLACE_BID",
+                    "token_id": self.token_id,
+                    "object_id": oid,
+                    "bid": new_bid,
+                })
+                logging.info("placeBid %.2f on %s: %s",
+                             new_bid, oid, br["message"])
         except Exception as e:
             logging.warning("Poll error: %s", e)
 
@@ -241,13 +261,18 @@ class Peer:
     # ------------------------------------------------------------------ #
 
     def _peer_server_loop(self):
+        self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.udp_sock.bind((config.SERVER_HOST, 0))
+        self.udp_port = self.udp_sock.getsockname()[1]
+
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         srv.bind((config.SERVER_HOST, 0))
         self.peer_port = srv.getsockname()[1]
         srv.listen(10)
         srv.settimeout(1.0)
-        logging.info("Peer server on port %d", self.peer_port)
+        logging.info("Peer TCP %d  UDP %d", self.peer_port, self.udp_port)
 
         while self.running:
             try:
@@ -257,6 +282,11 @@ class Peer:
             except socket.timeout:
                 pass
         srv.close()
+        if self.udp_sock:
+            try:
+                self.udp_sock.close()
+            except OSError:
+                pass
 
     def _handle_incoming(self, sock):
         try:
@@ -278,11 +308,12 @@ class Peer:
                 fb = msg["final_bid"]
                 sip = msg["seller_ip"]
                 sport = msg["seller_port"]
+                sudp = int(msg.get("seller_udp_port", sport))
                 logging.info("*** WON auction: %s for %.2f ***", oid, fb)
                 send_message(sock, {"type": "ACK"})
                 threading.Thread(
                     target=self._do_buy,
-                    args=(oid, fb, sip, sport),
+                    args=(oid, fb, sip, sport, sudp),
                     daemon=True,
                 ).start()
 
@@ -309,8 +340,49 @@ class Peer:
     #  P2P transaction                                                     #
     # ------------------------------------------------------------------ #
 
-    def _do_buy(self, oid, bid, seller_ip, seller_port):
-        time.sleep(1)
+    def _report_seller_tx(self, oid):
+        if not self.token_id:
+            return
+        try:
+            self._send_to_server({
+                "type": "SELLER_TX_SUCCESS",
+                "token_id": self.token_id,
+                "object_id": oid,
+            })
+        except Exception as e:
+            logging.warning("seller tx success report: %s", e)
+
+    def _report_seller_tx_failure(self, oid, reason):
+        if not self.token_id:
+            return
+        try:
+            self._send_to_server({
+                "type": "SELLER_TX_FAILURE",
+                "token_id": self.token_id,
+                "object_id": oid,
+                "reason": reason,
+            })
+        except Exception as e:
+            logging.warning("seller tx failure report: %s", e)
+
+    def _report_tx(self, oid, outcome):
+        try:
+            self._send_to_server({
+                "type": "TRANSACTION_REPORT",
+                "token_id": self.token_id,
+                "object_id": oid,
+                "outcome": outcome,
+            })
+        except Exception as e:
+            logging.warning("transaction report: %s", e)
+
+    def _do_buy(self, oid, bid, seller_ip, seller_port, seller_udp_port):
+        time.sleep(0.5)
+        proceed = random.random() < config.TRANSACTION_PROCEED_PROBABILITY
+        if not proceed:
+            logging.info("Declining transaction for %s (simulated cancel)", oid)
+            self._report_tx(oid, "cancel")
+            return
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(config.SOCKET_TIMEOUT)
@@ -320,47 +392,51 @@ class Peer:
                 "object_id": oid,
                 "bid": bid,
                 "buyer_username": self.username,
+                "buyer_udp_port": self.udp_port,
             })
             resp = recv_message(s)
             s.close()
 
-            if resp.get("success"):
-                fpath = os.path.join(self.shared_dir, "%s.txt" % oid)
-                with open(fpath, "w", encoding="utf-8") as fh:
-                    fh.write(resp["metadata"])
-                logging.info("Transaction OK: received %s", oid)
-                try:
-                    self._send_to_server({
-                        "type": "NOTIFY_PURCHASE",
-                        "token_id": self.token_id,
-                        "object_id": oid,
-                    })
-                except Exception:
-                    pass
+            if not resp.get("success"):
+                logging.warning("Transaction FAILED for %s (seller declined or missing item)", oid)
+                return
+
+            if resp.get("udp"):
+                drop_p = float(config.UDP_DROP_DATA_PROB)
+                ack_p = float(config.UDP_ACK_SEND_PROB)
+                with self.udp_lock:
+                    meta_bytes = gbn_udp.receive_metadata(
+                        self.udp_sock,
+                        drop_data_prob=drop_p,
+                        ack_send_prob=ack_p,
+                        log=lambda m: logging.info(m),
+                        deadline=time.time() + 120.0,
+                    )
+                if meta_bytes is None:
+                    logging.warning("UDP receive failed for %s", oid)
+                    self._report_tx(oid, "fail")
+                    return
+                text = meta_bytes.decode("utf-8")
             else:
-                logging.warning("Transaction FAILED for %s", oid)
+                text = resp.get("metadata", "")
+
+            fpath = os.path.join(self.shared_dir, "%s.txt" % oid)
+            with open(fpath, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            logging.info("Transaction OK: received %s", oid)
+            self._report_tx(oid, "success")
         except Exception as e:
             logging.error("Buy error for %s: %s", oid, e)
+            self._report_tx(oid, "fail")
 
     def _handle_sell(self, sock, msg):
         oid = msg["object_id"]
         bid = msg["bid"]
         buyer = msg["buyer_username"]
+        buyer_udp = msg.get("buyer_udp_port")
         fpath = os.path.join(self.shared_dir, "%s.txt" % oid)
 
-        if os.path.exists(fpath):
-            with open(fpath, "r", encoding="utf-8") as fh:
-                meta = fh.read()
-            send_message(sock, {
-                "type": "TRANSACTION_RESP",
-                "success": True,
-                "object_id": oid,
-                "metadata": meta,
-            })
-            os.remove(fpath)
-            logging.info("Sold %s to %s for %.2f - file transferred & removed",
-                          oid, buyer, bid)
-        else:
+        if not os.path.exists(fpath):
             send_message(sock, {
                 "type": "TRANSACTION_RESP",
                 "success": False,
@@ -368,6 +444,55 @@ class Peer:
                 "metadata": "",
             })
             logging.warning("Sell failed: %s not in shared_directory", oid)
+            self._report_seller_tx_failure(oid, "item_not_found")
+            return
+
+        with open(fpath, "r", encoding="utf-8") as fh:
+            meta = fh.read()
+
+        if buyer_udp is None:
+            send_message(sock, {
+                "type": "TRANSACTION_RESP",
+                "success": True,
+                "object_id": oid,
+                "metadata": meta,
+            })
+            os.remove(fpath)
+            logging.info("Sold %s to %s (TCP metadata)", oid, buyer)
+            self._report_seller_tx(oid)
+            return
+
+        buyer_ip = sock.getpeername()[0]
+        buyer_udp = int(buyer_udp)
+        meta_bytes = meta.encode("utf-8")
+        usock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        packets = gbn_udp.packetize_metadata(meta_bytes)
+        send_message(sock, {
+            "type": "TRANSACTION_RESP",
+            "success": True,
+            "object_id": oid,
+            "metadata": "",
+            "udp": True,
+        })
+        try:
+            sock.close()
+        except OSError:
+            pass
+        sender = gbn_udp.GbnUdpSender(
+            usock,
+            (buyer_ip, buyer_udp),
+            packets,
+            log=lambda m: logging.info(m),
+        )
+        ok = sender.run()
+        if ok:
+            os.remove(fpath)
+            logging.info("Sold %s to %s for %.2f (UDP GBN) file removed",
+                         oid, buyer, bid)
+            self._report_seller_tx(oid)
+        else:
+            logging.warning("UDP transfer incomplete for %s — file kept", oid)
+            self._report_seller_tx_failure(oid, "udp_incomplete")
 
     # ------------------------------------------------------------------ #
     #  Main entry                                                          #

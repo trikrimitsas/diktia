@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+.venv/
+venv/
+env/
+*.log
+*.tmp
+screenshots/*2026-04-03*.png
